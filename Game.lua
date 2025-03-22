@@ -96,26 +96,6 @@ challenge_handlers["kirby2"] = function(state)
     state.prev_value = current_value
 end
 
-challenge_handlers["1-1"] = function(state)
-    local mario_x_addr = 0x0090
-    local mario_x = memory.readbyte(mario_x_addr)
-    
-    if state.prev_x == nil then
-        state.prev_x = mario_x
-    end
-
-    if state.prev_x <= 244 and mario_x > 244 then
-        switch_to_random_challenge(current_challenge.name)
-        return
-    end
-
-    if check_death_and_switch() then
-        schedule_challenge_switch(48, nil)
-        return
-    end
-    state.prev_x = mario_x
-end
-
 
 function check_death_and_switch(state)
     local fanfare_play_byte = 0x04F4
@@ -133,6 +113,26 @@ function check_death_and_switch(state)
     end
     state.prev_fanfare = current_fanfare
     return false
+end
+
+challenge_handlers["1-1"] = function(state)
+    local mario_x_addr = 0x0090
+    local mario_x = memory.readbyte(mario_x_addr)
+    
+    if state.prev_x == nil then
+        state.prev_x = mario_x
+    end
+
+    if state.prev_x <= 244 and mario_x > 244 then
+        switch_to_random_challenge(current_challenge.name)
+        return
+    end
+
+    if check_death_and_switch(state) then
+        schedule_challenge_switch(48, nil)
+        return
+    end
+    state.prev_x = mario_x
 end
 
 

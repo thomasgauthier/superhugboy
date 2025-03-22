@@ -8,6 +8,7 @@ local savestates = {
     ["fireman"] = "game_data/states/Mega Man - fire man.State", 
     ["cutman"] = "game_data/states/Mega Man - cut man.State",
     ["zelda_boss"] = "game_data/states/Legend of Zelda - boss 1.State",
+    ["zelda_take_this"] = "game_data/states/Legend of Zelda - take this.State",
     ["castlevania"] = "game_data/states/Castlevania - level 1.State",
     ["tetris"] = "game_data/states/Tetris.State",
     ["pinball"] = "game_data/states/pinball.State",
@@ -25,6 +26,7 @@ local challenge_roms = {
     ["fireman"] = "game_data/ROMS/Mega Man (USA).zip",
     ["cutman"] = "game_data/ROMS/Mega Man (USA).zip",
     ["zelda_boss"] = "game_data/ROMS/Legend of Zelda, The (USA) (Rev 1).zip",
+    ["zelda_take_this"] = "game_data/ROMS/Legend of Zelda, The (USA) (Rev 1).zip",
     ["castlevania"] = "game_data/ROMS/Castlevania (USA) (Rev A).zip",
     ["tetris"] = "game_data/ROMS/Tetris (USA).zip",
     ["pinball"] = "game_data/ROMS/Pokemon Pinball - Ruby & Sapphire (USA).zip",
@@ -42,6 +44,7 @@ local challenge_names = {
     ["fireman"] = "Fire Man", 
     ["cutman"] = "Cut Man",
     ["zelda_boss"] = "Zelda Boss",
+    ["zelda_take_this"] = "Zelda legend",
     ["castlevania"] = "Castlevania",
     ["tetris"] = "Tetris",
     ["pinball"] = "Pinball",
@@ -130,26 +133,6 @@ challenge_handlers["kirby2"] = function(state)
     state.prev_value = current_value
 end
 
-challenge_handlers["1-1"] = function(state)
-    local mario_x_addr = 0x0090
-    local mario_x = memory.readbyte(mario_x_addr)
-    
-    if state.prev_x == nil then
-        state.prev_x = mario_x
-    end
-
-    if state.prev_x <= 244 and mario_x > 244 then
-        switch_to_random_challenge(current_challenge.name)
-        return
-    end
-
-    if check_death_and_switch() then
-        schedule_challenge_switch(48, nil)
-        return
-    end
-    state.prev_x = mario_x
-end
-
 
 function check_death_and_switch(state)
     local fanfare_play_byte = 0x04F4
@@ -167,6 +150,26 @@ function check_death_and_switch(state)
     end
     state.prev_fanfare = current_fanfare
     return false
+end
+
+challenge_handlers["1-1"] = function(state)
+    local mario_x_addr = 0x0090
+    local mario_x = memory.readbyte(mario_x_addr)
+    
+    if state.prev_x == nil then
+        state.prev_x = mario_x
+    end
+
+    if state.prev_x <= 244 and mario_x > 244 then
+        switch_to_random_challenge(current_challenge.name)
+        return
+    end
+
+    if check_death_and_switch(state) then
+        schedule_challenge_switch(48, nil)
+        return
+    end
+    state.prev_x = mario_x
 end
 
 
@@ -249,6 +252,26 @@ end
 
 challenge_handlers["fireman"] = challenge_handlers["bombman"]
 challenge_handlers["cutman"] = challenge_handlers["bombman"]
+
+challenge_handlers["zelda_take_this"] = function(state)
+    -- Address to check for the "take this" event
+    local check_addr = 0x0657
+    local current_value = memory.readbyte(check_addr)
+    
+    -- Initialize prev_value if it doesn't exist
+    if state.prev_value == nil then
+        state.prev_value = current_value
+    end
+
+    -- Check for transition from 0 to non-zero
+    if state.prev_value == 0 and current_value ~= 0 then
+        schedule_challenge_switch(64, nil)
+        return
+    end
+
+    -- Store current value for next comparison
+    state.prev_value = current_value
+end
 
 challenge_handlers["zelda_boss"] = function(state)
     local health_addr = 0x066F

@@ -89,14 +89,10 @@ challenge_handlers["sf2_ryu"] = function(state)
     local in_fight = mainmemory.read_u16_le(0x0000E0)
 
     if in_fight == 7 and player_hp <= 0 then
-        print("lose" .. in_fight .. " " .. player_hp)
-        --switch_to_random_challenge(current_challenge.name)
         schedule_challenge_switch(96, nil)
     end
 
     if in_fight == 7 and opponent_hp <= 0 then
-        print("win" .. in_fight .. " " .. opponent_hp)
-        --switch_to_random_challenge(current_challenge.name)
         schedule_challenge_switch(96, nil)
     end
 end

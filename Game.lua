@@ -290,7 +290,7 @@ challenge_handlers["bombman"] = function(state)
     end
 
     if state.prev_hp > 0 and current_hp == 0 then
-        switch_to_random_challenge(current_challenge.name)
+        schedule_challenge_switch(48, nil)
         return
     end
 
@@ -302,7 +302,7 @@ challenge_handlers["bombman"] = function(state)
         end
     end
     if all_zero then
-        switch_to_random_challenge(current_challenge.name)
+        schedule_challenge_switch(48, nil)
         return
     end
     state.prev_hp = current_hp

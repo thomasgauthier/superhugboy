@@ -16,7 +16,11 @@ local savestates = {
     ["kirby"] = "game_data/states/Kirby's Adventure - mini boss.State",
     ["kirby2"] = "game_data/states/Kirby's Adventure - level 1 (until door).State",
     ["mario3_spikes"] = "game_data/states/Super Mario Bros. 3 - crushing ceiling.State",
-    ["streetsofrage2"] = "game_data/states/Streets of Rage 2 - mini boss 1.State"
+    ["streetsofrage2"] = "game_data/states/Streets of Rage 2 - mini boss 1.State",
+    ["sonic"] = "game_data/states/Sonic The Hedgehog - level 1.State",
+    ["pokemon"] = "game_data/states/Pokemon Red - choose pokemon.State",
+    ["sf2_blanka"] = "game_data/states/Street Fighter II Turbo - blanka vs dhalsim.State",
+    ["sf2_ryu"] = "game_data/states/Street Fighter II Turbo - ryu vs guile.State"
 }
 
 local challenge_roms = {
@@ -34,25 +38,33 @@ local challenge_roms = {
     ["kirby"] = "game_data/ROMS/Kirby's Adventure (USA) (Rev A).zip",
     ["kirby2"] = "game_data/ROMS/Kirby's Adventure (USA) (Rev A).zip",
     ["mario3_spikes"] = "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip",
-    ["streetsofrage2"] = "game_data/ROMS/Streets of Rage 2 (USA).zip"
+    ["streetsofrage2"] = "game_data/ROMS/Streets of Rage 2 (USA).zip",
+    ["sonic"] = "game_data/ROMS/Sonic The Hedgehog (USA, Europe).zip",
+    ["pokemon"] = "game_data/ROMS/Pokemon - Red Version (USA, Europe) (SGB Enhanced).zip",
+    ["sf2_blanka"] = "game_data/ROMS/Street Fighter II Turbo (USA) (Rev 1).zip",
+    ["sf2_ryu"] = "game_data/ROMS/Street Fighter II Turbo (USA) (Rev 1).zip"
 }
 
 local challenge_names = {
     --["1-1"] = "1-1",
-    ["first_mini_boss"] = "Mini Boss",
-    ["bombman"] = "Bombman",
-    ["fireman"] = "Fire Man", 
-    ["cutman"] = "Cut Man",
-    ["zelda_boss"] = "Zelda Boss",
-    ["zelda_take_this"] = "Zelda legend",
-    ["castlevania"] = "Castlevania",
-    ["tetris"] = "Tetris",
+    ["first_mini_boss"] = "Beat the boss!",
+    ["bombman"] = "Finish the screen!",
+    ["fireman"] = "Finish the screen!", 
+    ["cutman"] = "Finish the screen!",
+    ["zelda_boss"] = "Beat the boss!",
+    ["zelda_take_this"] = "",
+    ["castlevania"] = "Finish the screen!",
+    ["tetris"] = "Make 1 line!",
     ["pinball"] = "Pinball",
-    ["donkeykong"] = "Donkey Kong",
-    ["kirby"] = "Kirby",
-    ["kirby2"] = "Kirby",
-    ["mario3_spikes"] = "mario3_spikes",
-    ["streetsofrage2"] = "Beat the boss!"
+    ["donkeykong"] = "Finish the level!",
+    ["kirby"] = "Beat the boss!",
+    ["kirby2"] = "Finish the screen!",
+    ["mario3_spikes"] = "Reach the door!",
+    ["streetsofrage2"] = "Beat the boss!",
+    ["sonic"] = "Beat the level!",
+    ["pokemon"] = "Choose a pokémon!",
+    ["sf2_blanka"] = "Win the fight!",
+    ["sf2_ryu"] = "Win the fight!"
 }
 
 local current_challenge = {
@@ -71,6 +83,48 @@ local scheduled_switch = {
 
 local challenge_handlers = {}
 
+challenge_handlers["sf2_ryu"] = function(state)
+    local player_hp = mainmemory.read_u16_le(0x000636)
+    local opponent_hp = mainmemory.read_u16_le(0x000836)
+    local in_fight = mainmemory.read_u16_le(0x0000E0)
+
+    if in_fight == 7 and player_hp <= 0 then
+        print("lose" .. in_fight .. " " .. player_hp)
+        --switch_to_random_challenge(current_challenge.name)
+        schedule_challenge_switch(96, nil)
+    end
+
+    if in_fight == 7 and opponent_hp <= 0 then
+        print("win" .. in_fight .. " " .. opponent_hp)
+        --switch_to_random_challenge(current_challenge.name)
+        schedule_challenge_switch(96, nil)
+    end
+end
+
+challenge_handlers["sf2_blanka"] = challenge_handlers["sf2_ryu"]
+
+challenge_handlers["pokemon"] = function(state)
+    local pokemon_in_team = mainmemory.readbyte(0x1163)
+
+    if pokemon_in_team >= 1 then
+        print(pokemon_in_team)
+        switch_to_random_challenge(current_challenge.name)
+    end
+end
+
+challenge_handlers["sonic"] = function(state)
+    local lives = mainmemory.read_s16_be(0xFE12)
+    local score_bonus = mainmemory.read_s16_be(0xF7D2)
+
+    if lives <= 2 then
+        schedule_challenge_switch(96, nil)
+    end
+
+    if score_bonus > 0 then
+        switch_to_random_challenge(current_challenge.name)
+    end
+end
+
 challenge_handlers["streetsofrage2"] = function(state)
     local playerhp_addr = 0xEFA8
     local timer_addr = 0xFC3C
@@ -82,7 +136,8 @@ challenge_handlers["streetsofrage2"] = function(state)
     local current_enemy_lives = mainmemory.read_u16_be(enemylives_addr)
 
     if current_hp <= 0 or current_hp > 300 or current_time <= 0 then
-        schedule_challenge_switch(48, nil)
+        state.boss_spawned = nil
+        schedule_challenge_switch(96, nil)
         return
     end
 
@@ -97,7 +152,8 @@ challenge_handlers["streetsofrage2"] = function(state)
     end
 
     if state.boss_spawned and current_enemy_hp <= 0 and current_enemy_lives <= 0 then
-        schedule_challenge_switch(48, nil)
+        state.boss_spawned = nil
+        schedule_challenge_switch(96, nil)
         return
     end
 end

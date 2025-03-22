@@ -2,7 +2,7 @@
 
 -- Define savestates
 local savestates = {
-    ["1-1"] = "game_data/states/1-1.state",
+    --["1-1"] = "game_data/states/1-1.state",
     ["first_mini_boss"] = "game_data/states/Super Mario Bros. 3 - first mini boss.State",
     ["bombman"] = "game_data/states/Mega Man - bomb man.State",
     ["fireman"] = "game_data/states/Mega Man - fire man.State", 
@@ -14,11 +14,12 @@ local savestates = {
     ["donkeykong"] = "game_data/states/Donkey Kong Country - level 1.State",
     ["kirby"] = "game_data/states/Kirby's Adventure - mini boss.State",
     ["kirby2"] = "game_data/states/Kirby's Adventure - level 1 (until door).State",
-    ["mario3_spikes"] = "game_data/states/Super Mario Bros. 3 - crushing ceiling.State"
+    ["mario3_spikes"] = "game_data/states/Super Mario Bros. 3 - crushing ceiling.State",
+    ["streetsofrage2"] = "game_data/states/Streets of Rage 2 - mini boss 1.State"
 }
 
 local challenge_roms = {
-    ["1-1"] = "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip",
+    --["1-1"] = "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip",
     ["first_mini_boss"] = "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip",
     ["bombman"] = "game_data/ROMS/Mega Man (USA).zip",
     ["fireman"] = "game_data/ROMS/Mega Man (USA).zip",
@@ -30,11 +31,12 @@ local challenge_roms = {
     ["donkeykong"] = "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).zip",
     ["kirby"] = "game_data/ROMS/Kirby's Adventure (USA) (Rev A).zip",
     ["kirby2"] = "game_data/ROMS/Kirby's Adventure (USA) (Rev A).zip",
-    ["mario3_spikes"] = "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip"
+    ["mario3_spikes"] = "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip",
+    ["streetsofrage2"] = "game_data/ROMS/Streets of Rage 2 (USA).zip"
 }
 
 local challenge_names = {
-    ["1-1"] = "1-1",
+    --["1-1"] = "1-1",
     ["first_mini_boss"] = "Mini Boss",
     ["bombman"] = "Bombman",
     ["fireman"] = "Fire Man", 
@@ -46,7 +48,8 @@ local challenge_names = {
     ["donkeykong"] = "Donkey Kong",
     ["kirby"] = "Kirby",
     ["kirby2"] = "Kirby",
-    ["mario3_spikes"] = "mario3_spikes"
+    ["mario3_spikes"] = "mario3_spikes",
+    ["streetsofrage2"] = "Beat the boss!"
 }
 
 local current_challenge = {
@@ -64,6 +67,37 @@ local scheduled_switch = {
 }
 
 local challenge_handlers = {}
+
+challenge_handlers["streetsofrage2"] = function(state)
+    local playerhp_addr = 0xEFA8
+    local timer_addr = 0xFC3C
+    local enemyhp_addr = 0xF180
+    local enemylives_addr = 0xF182
+    local current_hp = mainmemory.read_s16_be(playerhp_addr)
+    local current_time = mainmemory.read_u16_be(timer_addr)
+    local current_enemy_hp = mainmemory.read_u16_be(enemyhp_addr)
+    local current_enemy_lives = mainmemory.read_u16_be(enemylives_addr)
+
+    if current_hp <= 0 or current_hp > 300 or current_time <= 0 then
+        schedule_challenge_switch(48, nil)
+        return
+    end
+
+    if state.boss_spawned == nil then
+        state.boss_spawned = false
+    end
+
+    if not state.boss_spawned then
+        if current_enemy_lives > 0 then
+            state.boss_spawned = true
+        end
+    end
+
+    if state.boss_spawned and current_enemy_hp <= 0 and current_enemy_lives <= 0 then
+        schedule_challenge_switch(48, nil)
+        return
+    end
+end
 
 challenge_handlers["kirby"] = function(state)
     local score_addr = 0x0593

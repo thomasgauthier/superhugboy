@@ -23,6 +23,7 @@ local savestates = {
     ["streetsofrage2"] = "game_data/states/Streets of Rage 2 - mini boss 1.State",
     ["sonic"] = "game_data/states/Sonic The Hedgehog - level 1.State",
     ["pokemon"] = "game_data/states/Pokemon Red - choose pokemon.State",
+    ["supermetroid_escape"] = "game_data/states/Super Metroid - First Escape.State",
     ["sf2_blanka"] = "game_data/states/Street Fighter II Turbo - blanka vs dhalsim.State",
     ["sf2_ryu"] = "game_data/states/Street Fighter II Turbo - ryu vs guile.State"
 }
@@ -49,6 +50,7 @@ local challenge_roms = {
     ["streetsofrage2"] = "game_data/ROMS/Streets of Rage 2 (USA).zip",
     ["sonic"] = "game_data/ROMS/Sonic The Hedgehog (USA, Europe).zip",
     ["pokemon"] = "game_data/ROMS/Pokemon - Red Version (USA, Europe) (SGB Enhanced).zip",
+    ["supermetroid_escape"] = "game_data/ROMS/Super Metroid (Japan, USA) (En,Ja).zip",
     ["sf2_blanka"] = "game_data/ROMS/Street Fighter II Turbo (USA) (Rev 1).zip",
     ["sf2_ryu"] = "game_data/ROMS/Street Fighter II Turbo (USA) (Rev 1).zip"
 }
@@ -75,6 +77,7 @@ local challenge_names = {
     ["streetsofrage2"] = "Beat the boss!",
     ["sonic"] = "Beat the level!",
     ["pokemon"] = "Choose a pokémon!",
+    ["supermetroid_escape"] = "",
     ["sf2_blanka"] = "Win the fight!",
     ["sf2_ryu"] = "Win the fight!"
 }
@@ -94,6 +97,18 @@ local scheduled_switch = {
 }
 
 local challenge_handlers = {}
+
+challenge_handlers["supermetroid_escape"] = function(state)
+    local game_state = mainmemory.read_u16_le(0x000998)
+
+    if game_state == 32 then
+        schedule_challenge_switch(96, nil)
+    end
+
+    if game_state == 35 then
+        schedule_challenge_switch(96, nil)
+    end
+end
 
 challenge_handlers["alttp_cell"] = function(state)
     local music_id = mainmemory.read_u16_le(0x000132)
@@ -533,7 +548,7 @@ challenge_handlers["donkeykong"] = function(state)
 end
 
 function get_challenge_keys()
-    local keys = {"awakening_boss", "alttp_cell"}
+    local keys = {"supermetroid_escape", "alttp_cell"}
     -- for k, _ in pairs(challenge_handlers) do
     --     table.insert(keys, k)
     -- end
@@ -620,10 +635,10 @@ while true do
             for _ in pairs(completed_challenges) do
                 completed_count = completed_count + 1
             end
-            gui.drawText(10, 30, string.format("Completed: %d/%d",
-                completed_count,
-                #get_challenge_keys()),
-                "white", "black")
+            -- gui.drawText(10, 30, string.format("Completed: %d/%d",
+            --     completed_count,
+            --     #get_challenge_keys()),
+            --     "white", "black")
         else
             gui.drawText(10, 10, "No active challenge.", "red")
         end

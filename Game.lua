@@ -11,6 +11,8 @@ local savestates = {
     ["cutman"] = "game_data/states/Mega Man - cut man.State",
     ["zelda_boss"] = "game_data/states/Legend of Zelda - boss 1.State",
     ["zelda_take_this"] = "game_data/states/Legend of Zelda - take this.State",
+    ["awakening_boss"] = "game_data/states/Link's Awakening - mini boss.State",
+    ["alttp_cell"] = "game_data/states/A Link to the Past - mini boss.State",
     ["castlevania"] = "game_data/states/Castlevania - level 1.State",
     ["tetris"] = "game_data/states/Tetris.State",
     ["pinball"] = "game_data/states/pinball.State",
@@ -35,6 +37,8 @@ local challenge_roms = {
     ["cutman"] = "game_data/ROMS/Mega Man (USA).zip",
     ["zelda_boss"] = "game_data/ROMS/Legend of Zelda, The (USA) (Rev 1).zip",
     ["zelda_take_this"] = "game_data/ROMS/Legend of Zelda, The (USA) (Rev 1).zip",
+    ["awakening_boss"] = "game_data/ROMS/Legend of Zelda, The - Link's Awakening DX (USA, Europe) (SGB Enhanced).zip",
+    ["alttp_cell"] = "game_data/ROMS/Legend of Zelda, The - A Link to the Past (USA).zip",
     ["castlevania"] = "game_data/ROMS/Castlevania (USA) (Rev A).zip",
     ["tetris"] = "game_data/ROMS/Tetris (USA).zip",
     ["pinball"] = "game_data/ROMS/Pokemon Pinball - Ruby & Sapphire (USA).zip",
@@ -59,6 +63,8 @@ local challenge_names = {
     ["cutman"] = "Finish the screen!",
     ["zelda_boss"] = "Beat the boss!",
     ["zelda_take_this"] = "",
+    ["awakening_boss"] = "Defeat the boss!",
+    ["alttp_cell"] = "Free the princess!",
     ["castlevania"] = "Finish the screen!",
     ["tetris"] = "Make 1 line!",
     ["pinball"] = "Pinball",
@@ -88,6 +94,33 @@ local scheduled_switch = {
 }
 
 local challenge_handlers = {}
+
+challenge_handlers["alttp_cell"] = function(state)
+    local music_id = mainmemory.read_u16_le(0x000132)
+    local player_state = mainmemory.read_u16_le(0x00005E)
+
+    if music_id == 61712 or player_state == 2 then
+        schedule_challenge_switch(96, nil)
+    end
+
+    if music_id == 6416 then
+        schedule_challenge_switch(96, nil)
+    end
+end
+
+
+challenge_handlers["awakening_boss"] = function(state)
+    local enemy_hp = mainmemory.readbyte(0x364)
+    local player_hp = mainmemory.readbyte(0x1B5A)
+
+    if enemy_hp <= 0 then
+        schedule_challenge_switch(172, nil)
+    end
+
+    if player_hp <= 0 then
+        schedule_challenge_switch(96, nil)
+    end
+end
 
 challenge_handlers["mario_1-1"] = function(state)
     local player_state = mainmemory.readbyte(0x000E)
@@ -500,7 +533,7 @@ challenge_handlers["donkeykong"] = function(state)
 end
 
 function get_challenge_keys()
-    local keys = {"mario_1-1", "mario_castle"}
+    local keys = {"awakening_boss", "alttp_cell"}
     -- for k, _ in pairs(challenge_handlers) do
     --     table.insert(keys, k)
     -- end

@@ -4,6 +4,8 @@
 local savestates = {
     --["1-1"] = "game_data/states/1-1.state",
     ["mario3_first_mini_boss"] = "game_data/states/Super Mario Bros. 3 - first mini boss.State",
+    ["mario_1-1"] = "game_data/states/Super Mario Bros - 1-1.State",
+    ["mario_castle"] = "game_data/states/Super Mario Bros - castle.State",
     ["bombman"] = "game_data/states/Mega Man - bomb man.State",
     ["fireman"] = "game_data/states/Mega Man - fire man.State", 
     ["cutman"] = "game_data/states/Mega Man - cut man.State",
@@ -26,6 +28,8 @@ local savestates = {
 local challenge_roms = {
     --["1-1"] = "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip",
     ["mario3_first_mini_boss"] = "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip",
+    ["mario_1-1"] = "game_data/ROMS/Super Mario Bros. (Japan, USA).zip",
+    ["mario_castle"] = "game_data/ROMS/Super Mario Bros. (Japan, USA).zip",
     ["bombman"] = "game_data/ROMS/Mega Man (USA).zip",
     ["fireman"] = "game_data/ROMS/Mega Man (USA).zip",
     ["cutman"] = "game_data/ROMS/Mega Man (USA).zip",
@@ -48,6 +52,8 @@ local challenge_roms = {
 local challenge_names = {
     --["1-1"] = "1-1",
     ["mario3_first_mini_boss"] = "Beat the boss!",
+    ["mario_1-1"] = "Beat the level!",
+    ["mario_castle"] = "Defeat Bowser!",
     ["bombman"] = "Finish the screen!",
     ["fireman"] = "Finish the screen!", 
     ["cutman"] = "Finish the screen!",
@@ -58,7 +64,7 @@ local challenge_names = {
     ["pinball"] = "Pinball",
     ["donkeykong"] = "Finish the level!",
     ["kirby_boss"] = "Beat the boss!",
-    ["kirby_level1"] = "Finish the screen!",
+    ["kirby_level1"] = "Reach the door!",
     ["mario3_spikes"] = "Reach the door!",
     ["streetsofrage2"] = "Beat the boss!",
     ["sonic"] = "Beat the level!",
@@ -82,6 +88,51 @@ local scheduled_switch = {
 }
 
 local challenge_handlers = {}
+
+challenge_handlers["mario_1-1"] = function(state)
+    local player_state = mainmemory.readbyte(0x000E)
+
+    if check_mario_fail() then
+        schedule_challenge_switch(48, nil)
+    end
+
+    if player_state == 4 then
+        schedule_challenge_switch(48, nil)
+    end
+end
+
+challenge_handlers["mario_castle"] = function(state)
+    local enemy_types = {
+        mainmemory.readbyte(0x0016),
+        mainmemory.readbyte(0x0017),
+        mainmemory.readbyte(0x0018),
+        mainmemory.readbyte(0x0019),
+        mainmemory.readbyte(0x001A)
+    }
+    local are_enemies_present = false
+    for k,v in pairs(enemy_types) do
+        are_enemies_present = are_enemies_present or enemy_types[k] > 0
+    end
+
+    if check_mario_fail() then
+        schedule_challenge_switch(48, nil)
+    end
+
+    if not are_enemies_present then
+        schedule_challenge_switch(1, nil)
+    end
+end
+
+function check_mario_fail()
+    local player_state = mainmemory.readbyte(0x000E)
+    local sfx_id = mainmemory.readbyte(0x0712)
+    local timer1 = mainmemory.readbyte(0x07F8)
+    local timer2 = mainmemory.readbyte(0x07F9)
+    local timer3 = mainmemory.readbyte(0x07FA)
+    local time_is_up = timer1 == 0 and timer2 == 0 and timer3 == 0
+    
+    return player_state == 11 or sfx_id == 1 or time_is_up
+end
 
 challenge_handlers["sf2_ryu"] = function(state)
     local player_hp = mainmemory.read_u16_le(0x000636)
@@ -449,7 +500,7 @@ challenge_handlers["donkeykong"] = function(state)
 end
 
 function get_challenge_keys()
-    local keys = {"kirby_boss", "kirby_level1"}
+    local keys = {"mario_1-1", "mario_castle"}
     -- for k, _ in pairs(challenge_handlers) do
     --     table.insert(keys, k)
     -- end

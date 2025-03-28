@@ -309,25 +309,25 @@ function check_death_and_switch(state)
     return false
 end
 
-challenge_handlers["1-1"] = function(state)
-    local mario_x_addr = 0x0090
-    local mario_x = memory.readbyte(mario_x_addr)
+-- challenge_handlers["1-1"] = function(state)
+--     local mario_x_addr = 0x0090
+--     local mario_x = memory.readbyte(mario_x_addr)
     
-    if state.prev_x == nil then
-        state.prev_x = mario_x
-    end
+--     if state.prev_x == nil then
+--         state.prev_x = mario_x
+--     end
 
-    if state.prev_x <= 244 and mario_x > 244 then
-        switch_to_random_challenge(current_challenge.name)
-        return
-    end
+--     if state.prev_x <= 244 and mario_x > 244 then
+--         switch_to_random_challenge(current_challenge.name)
+--         return
+--     end
 
-    if check_death_and_switch(state) then
-        schedule_challenge_switch(48, nil)
-        return
-    end
-    state.prev_x = mario_x
-end
+--     if check_death_and_switch(state) then
+--         schedule_challenge_switch(48, nil)
+--         return
+--     end
+--     state.prev_x = mario_x
+-- end
 
 
 challenge_handlers["mario3_first_mini_boss"] = function(state)
@@ -548,10 +548,10 @@ challenge_handlers["donkeykong"] = function(state)
 end
 
 function get_challenge_keys()
-    local keys = {"supermetroid_escape", "alttp_cell"}
-    -- for k, _ in pairs(challenge_handlers) do
-    --     table.insert(keys, k)
-    -- end
+    local keys = {}
+    for k, _ in pairs(challenge_handlers) do
+        table.insert(keys, k)
+    end
     return keys
 end
 

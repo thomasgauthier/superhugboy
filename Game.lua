@@ -51,13 +51,13 @@ local challenge_modules_repository = {
     -- require("./challenges/StreetsofRage2"),
     -- require("./challenges/ALinkToThePast"),
     -- require("./challenges/Kirby"),
-    -- require("./challenges/DonkeyKongCountry"),
+    require("./challenges/DonkeyKongCountry"),
     -- require("./challenges/Tetris"),
     -- require("./challenges/Castlevania"),
     -- require("./challenges/Zelda1"),
     -- require("./challenges/Megaman"),
     -- require("./challenges/Mario1"),
-    require("./challenges/Mario3"),
+    -- require("./challenges/Mario3"),
 }
 
 
@@ -147,6 +147,7 @@ end
 -- Initialize current challenge
 local current_challenge = 1
 local state = {}
+local current_rom_path = nil  -- Track the current ROM path
 
 -- Dynamic weight system parameters
 local dynamic_weights = {}
@@ -267,10 +268,6 @@ local function switch_to_next_challenge()
     current_challenge = next_challenge
     state = {}  -- Reset state for the new challenge
     state.text_display_timer = seconds_to_frames(challenge_text_timer)
-
-    
-    -- Print current weights for debugging
-    -- print_weights()
     
     -- Reset frames counter for weight recovery
     frames_since_last_change = 0
@@ -279,7 +276,15 @@ local function switch_to_next_challenge()
     local challenge = challenge_handlers[current_challenge]
     if challenge then
         print("Switching to challenge: " .. challenge.game_slug)
-        client.openrom(challenge.rom_path)
+        
+        -- Only reload ROM if it's different from the current one
+        if current_rom_path ~= challenge.rom_path then
+            client.openrom(challenge.rom_path)
+            current_rom_path = challenge.rom_path
+        else
+            print("Same ROM detected, skipping reload")
+        end
+        
         savestate.load(challenge.savestate_path)
     end
 end
@@ -299,7 +304,11 @@ if #challenge_handlers > 0 then
     if challenge then
         print("Loading challenge: " .. challenge.game_slug)
         -- print_weights()  -- Print initial weights
+        
+        -- Always load the ROM for the first challenge
         client.openrom(challenge.rom_path)
+        current_rom_path = challenge.rom_path
+        
         savestate.load(challenge.savestate_path)
     end
 end

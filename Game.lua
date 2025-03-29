@@ -58,6 +58,7 @@ local challenge_modules_repository = {
     -- require("./challenges/Megaman"),
     -- require("./challenges/Mario1"),
     -- require("./challenges/Mario3"),
+    -- require("./challenges/MarioWorld"),
 }
 
 

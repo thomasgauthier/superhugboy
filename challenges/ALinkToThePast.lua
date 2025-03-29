@@ -12,10 +12,18 @@ return {
             local music_id = mainmemory.read_u16_le(0x000132)
             local player_state = mainmemory.read_u16_le(0x00005E)
 
-            if music_id == 61712 or player_state == 2 then
-                return 1.6 -- Equivalent to 96 frames at 60fps
+            -- exit dungeon
+            if player_state == 2 then
+                reset(0.2)
             end
 
+
+            -- death
+            if music_id == 61712 then
+                return 1.1
+            end
+
+            -- victory (defeat mini boss)
             if music_id == 6416 then
                 return 1.6 -- Equivalent to 96 frames at 60fps
             end

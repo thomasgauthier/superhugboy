@@ -26,6 +26,9 @@ end
 reloadAll()
 
 
+local challenge_text_timer = 5
+
+
 -- Challenge handler shape for reference:
 --[[
 {
@@ -46,15 +49,15 @@ local challenge_modules_repository = {
     -- -- require("./challenges/Pokemon"),
     -- require("./challenges/Sonic"),
     -- require("./challenges/StreetsofRage2"),
-    require("./challenges/ALinkToThePast"),
-    require("./challenges/Kirby"),
-    require("./challenges/DonkeyKongCountry"),
+    -- require("./challenges/ALinkToThePast"),
+    -- require("./challenges/Kirby"),
+    -- require("./challenges/DonkeyKongCountry"),
     -- require("./challenges/Tetris"),
     -- require("./challenges/Castlevania"),
     -- require("./challenges/Zelda1"),
     -- require("./challenges/Megaman"),
     -- require("./challenges/Mario1"),
-    -- require("./challenges/Mario3"),
+    require("./challenges/Mario3"),
 }
 
 
@@ -263,6 +266,8 @@ local function switch_to_next_challenge()
     
     current_challenge = next_challenge
     state = {}  -- Reset state for the new challenge
+    state.text_display_timer = seconds_to_frames(challenge_text_timer)
+
     
     -- Print current weights for debugging
     -- print_weights()
@@ -352,7 +357,10 @@ while true do
                 state.reset_timer.frames_left = seconds_to_frames(seconds)
             else
                 -- Immediate reset
-                state = {} -- reset state
+                state = {
+                    text_display_timer = seconds_to_frames(challenge_text_timer)
+                }
+
                 savestate.load(challenge_handlers[current_challenge].savestate_path) -- reload save state
             end
         end)
@@ -373,8 +381,26 @@ while true do
                 x_pos = challenge.challenge_text_pos.x
                 y_pos = challenge.challenge_text_pos.y
             end
+
+            if state.text_display_timer == nil then
+                state.text_display_timer = seconds_to_frames(challenge_text_timer)
+            end
+
             
-            gui.drawText(x_pos, y_pos, challenge.challenge_text, "yellow", "black")
+            -- Initialize text display timer if not already set
+            -- Only show text if timer hasn't expired
+            if state.text_display_timer > 0 then
+                state.text_display_timer = state.text_display_timer - 1
+
+                if state.text_display_timer <= 0 then
+                    print("clearing text")
+                    gui.drawText(0, 0, "", "white", "white") -- keep this, need to clear text
+
+                    gui.cleartext()
+                else
+                    gui.drawText(x_pos, y_pos, challenge.challenge_text, "yellow", "black")
+                end
+            end
             
             -- Display switch timer if active
             if switch_timer.active then
@@ -383,6 +409,9 @@ while true do
                 gui.drawText(10, 30, "Next challenge in: " .. seconds_left .. "s", "white", "black")
             end
         end
+
+        gui.cleartext()
+
     else
         gui.drawText(10, 10, "No handler found.", "red")
     end

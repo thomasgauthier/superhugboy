@@ -41,14 +41,13 @@ reloadAll()
 
 local challenge_modules_repository = {
     -- require("./challenges/LinksAwakening"),
-
-    require("./challenges/StreetFighter"),
+    -- require("./challenges/StreetFighter"),
     -- require("./challenges/Metroid"),
     -- require("./challenges/Pokemon"),
     -- require("./challenges/Sonic"),
     -- require("./challenges/StreetsofRage2"),
     -- require("./challenges/Kirby"),
-    -- require("./challenges/DonkeyKongCountry"),
+    require("./challenges/DonkeyKongCountry"),
     -- require("./challenges/Tetris"),
     -- require("./challenges/Castlevania"),
     -- require("./challenges/ALinkToThePast"),
@@ -212,6 +211,14 @@ while true do
             switch_timer.active = false
         end
     end
+    
+    -- Check for T key press to skip to next challenge
+    local current_t_state = input.get()["T"]
+    if current_t_state and not prev_t_state then
+        switch_to_next_challenge()
+        switch_timer.active = false
+    end
+    prev_t_state = current_t_state
     
     -- Get the current challenge handler
     local handler = challenge_handlers[current_challenge].handler

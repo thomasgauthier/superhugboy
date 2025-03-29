@@ -11,10 +11,19 @@ return {
         handler = function(state, reset)
             local lives = mainmemory.read_s16_be(0xFE12)
             local score_bonus = mainmemory.read_s16_be(0xF7D2)
-
-            if lives <= 2 then
-                return 1.6 -- Switch after 1.6 seconds (~96 frames at 60fps)
+            
+            -- Initialize previous lives in state if it doesn't exist
+            if state.previous_lives == nil then
+                state.previous_lives = lives
             end
+            
+            -- Check if lives decreased
+            if lives < state.previous_lives then
+                return 0.016 -- Switch immediately (~1 frame)
+            end
+            
+            -- Update previous lives for next check
+            state.previous_lives = lives
 
             if score_bonus > 0 then
                 return 0.016 -- Switch immediately (~1 frame)

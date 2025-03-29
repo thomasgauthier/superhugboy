@@ -40,21 +40,22 @@ reloadAll()
 ]]
 
 local challenge_modules_repository = {
+    -- require("./challenges/LinksAwakening"),
+
     require("./challenges/StreetFighter"),
-    require("./challenges/Metroid"),
-    require("./challenges/Pokemon"),
-    require("./challenges/Sonic"),
-    require("./challenges/StreetsofRage2"),
-    require("./challenges/Kirby"),
-    require("./challenges/DonkeyKongCountry"),
-    require("./challenges/Tetris"),
-    require("./challenges/Castlevania"),
-    require("./challenges/ALinkToThePast"),
-    require("./challenges/LinksAwakening"),
-    require("./challenges/Zelda1"),
-    require("./challenges/Megaman"),
-    require("./challenges/Mario1"),
-    require("./challenges/Mario3"),
+    -- require("./challenges/Metroid"),
+    -- require("./challenges/Pokemon"),
+    -- require("./challenges/Sonic"),
+    -- require("./challenges/StreetsofRage2"),
+    -- require("./challenges/Kirby"),
+    -- require("./challenges/DonkeyKongCountry"),
+    -- require("./challenges/Tetris"),
+    -- require("./challenges/Castlevania"),
+    -- require("./challenges/ALinkToThePast"),
+    -- require("./challenges/Zelda1"),
+    -- require("./challenges/Megaman"),
+    -- require("./challenges/Mario1"),
+    -- require("./challenges/Mario3"),
 }
 
 
@@ -231,7 +232,15 @@ while true do
         -- Display challenge information
         local challenge = challenge_handlers[current_challenge]
         if challenge then
-            gui.drawText(10, 10, challenge.challenge_text, "yellow", "black")
+            local x_pos = 10
+            local y_pos = 10
+            
+            if challenge.challenge_text_pos then
+                x_pos = challenge.challenge_text_pos.x
+                y_pos = challenge.challenge_text_pos.y
+            end
+            
+            gui.drawText(x_pos, y_pos, challenge.challenge_text, "yellow", "black")
             
             -- Display switch timer if active
             if switch_timer.active then

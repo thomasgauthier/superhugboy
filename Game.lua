@@ -218,7 +218,8 @@ while true do
     -- Execute the handler with state
     if handler then
         local seconds_to_switch = handler(state, function()
-            savestate.load(challenge_handlers[current_challenge].savestate_path)
+            state = {} -- reset state
+            savestate.load(challenge_handlers[current_challenge].savestate_path) -- reload save state
         end)
         
         -- If handler returns a number, schedule a challenge switch

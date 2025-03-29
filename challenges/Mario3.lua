@@ -27,7 +27,7 @@ return {
         rom_path = rom_path,
         savestate_path = "game_data/states/Super Mario Bros. 3 - first mini boss.State",
         challenge_text = "Beat the boss!",
-        challenge_text_pos = { x = 100, y = 500 },
+        challenge_text_pos = { x = 74, y = 96 },
         weight = 1,
         handler = function(state)
             local trigger_addr = 0x05F3
@@ -53,12 +53,43 @@ return {
         rom_path = rom_path,
         savestate_path = "game_data/states/Super Mario Bros. 3 - crushing ceiling.State",
         challenge_text = "Reach the door!",
-        challenge_text_pos = { x = 100, y = 500 },
+        challenge_text_pos = { x = 70, y = 96 },
         weight = 1,
         handler = function(state)
             local check_addr = 0x0075
             local current_value = memory.readbyte(check_addr)
             state.prev_value = state.prev_value or current_value
+
+            if state.prev_value ~= 7 and current_value == 7 then
+                return 0.016 -- Switch immediately (~1 frame)
+            end
+
+            if check_death_and_switch(state) then
+                return 0.8 -- Switch after 0.8 seconds (~48 frames at 60fps)
+            end
+            
+            state.prev_value = current_value
+            
+            -- Return nil to continue the challenge
+            return nil
+        end
+    },
+    {
+        game_slug = game_slug,
+        rom_path = rom_path,
+        savestate_path = "game_data/states/Super Mario Bros. 3 - hammer bro.State",
+        challenge_text = "Beat the hammer bro!",
+        challenge_text_pos = { x = 58, y = 72 },
+        weight = 1,
+        handler = function(state)
+            local check_addr = 0x0075
+            local current_value = memory.readbyte(check_addr)
+            local object_id = memory.readbyte(0x05F3)
+            state.prev_value = state.prev_value or current_value
+
+            if object_id == 2 then
+                return 1.6
+            end
 
             if state.prev_value ~= 7 and current_value == 7 then
                 return 0.016 -- Switch immediately (~1 frame)

@@ -43,14 +43,14 @@ local challenge_modules_repository = {
     -- require("./challenges/LinksAwakening"),
     -- require("./challenges/StreetFighter"),
     -- require("./challenges/Metroid"),
-    -- require("./challenges/Pokemon"),
+    -- -- require("./challenges/Pokemon"),
     -- require("./challenges/Sonic"),
     -- require("./challenges/StreetsofRage2"),
-    -- require("./challenges/Kirby"),
+    require("./challenges/ALinkToThePast"),
+    require("./challenges/Kirby"),
     require("./challenges/DonkeyKongCountry"),
     -- require("./challenges/Tetris"),
     -- require("./challenges/Castlevania"),
-    -- require("./challenges/ALinkToThePast"),
     -- require("./challenges/Zelda1"),
     -- require("./challenges/Megaman"),
     -- require("./challenges/Mario1"),
@@ -145,6 +145,76 @@ end
 local current_challenge = 1
 local state = {}
 
+-- Dynamic weight system parameters
+local dynamic_weights = {}
+local base_weight_multiplier = 1.0  -- Base weight multiplier
+local played_penalty = 0.05         -- Weight after being played (5% of original)
+local recovery_rate = 0.012          -- Weight recovery per frame (2% per frame)
+local frames_since_last_change = 0  -- Track frames for weight recovery
+
+-- Initialize dynamic weights based on challenge handler weights
+local function init_dynamic_weights()
+    for i, handler in ipairs(challenge_handlers) do
+        dynamic_weights[i] = handler.weight or 1.0  -- Use handler weight or default to 1
+    end
+end
+
+-- Select next challenge based on dynamic weights
+local function select_weighted_challenge()
+    -- Calculate total weight
+    local total_weight = 0
+    for i, weight in ipairs(dynamic_weights) do
+        total_weight = total_weight + weight
+    end
+    
+    -- Select a random value within the total weight
+    local selection = math.random() * total_weight
+    
+    -- Find which challenge was selected
+    local cumulative_weight = 0
+    for i, weight in ipairs(dynamic_weights) do
+        cumulative_weight = cumulative_weight + weight
+        if selection <= cumulative_weight then
+            return i
+        end
+    end
+    
+    -- Fallback (should rarely happen due to floating-point precision)
+    return math.random(#challenge_handlers)
+end
+
+-- Update the weights of all challenges
+local function update_weights()
+    -- Increase weights of all challenges gradually
+    for i = 1, #dynamic_weights do
+        local original_weight = challenge_handlers[i].weight or 1.0
+        local max_weight = original_weight * base_weight_multiplier
+        
+        -- Only increase weight if it's below the max
+        if dynamic_weights[i] < max_weight then
+            dynamic_weights[i] = math.min(
+                max_weight,
+                dynamic_weights[i] + (original_weight * recovery_rate)
+            )
+        end
+    end
+end
+
+-- Reduce weight after a challenge is played
+local function reduce_weight(challenge_index)
+    local original_weight = challenge_handlers[challenge_index].weight or 1.0
+    dynamic_weights[challenge_index] = original_weight * played_penalty
+end
+
+-- Print the current weights (for debugging)
+local function print_weights()
+    print("Current dynamic weights:")
+    for i, weight in ipairs(dynamic_weights) do
+        local handler = challenge_handlers[i]
+        print(string.format("%s: %.2f", handler.game_slug, weight))
+    end
+end
+
 -- Challenge switch timer
 local switch_timer = {
     active = false,
@@ -173,13 +243,32 @@ end
 
 -- Switch to the next challenge
 local function switch_to_next_challenge()
-    local next_challenge = current_challenge + 1
-    if next_challenge > #challenge_handlers then
-        next_challenge = 1  -- Loop back to the first challenge
+    -- Reduce weight of current challenge
+    reduce_weight(current_challenge)
+    
+    -- Select next challenge based on weights
+    local next_challenge = select_weighted_challenge()
+    
+    -- Avoid playing the same challenge twice in a row if possible
+    if next_challenge == current_challenge and #challenge_handlers > 1 then
+        -- Try up to 3 times to get a different challenge
+        for attempt = 1, 3 do
+            local candidate = select_weighted_challenge()
+            if candidate ~= current_challenge then
+                next_challenge = candidate
+                break
+            end
+        end
     end
     
     current_challenge = next_challenge
     state = {}  -- Reset state for the new challenge
+    
+    -- Print current weights for debugging
+    -- print_weights()
+    
+    -- Reset frames counter for weight recovery
+    frames_since_last_change = 0
     
     -- Load the new challenge
     local challenge = challenge_handlers[current_challenge]
@@ -192,9 +281,19 @@ end
 
 -- Load the first challenge
 if #challenge_handlers > 0 then
+    -- Initialize random seed
+    math.randomseed(os.time())
+    
+    -- Initialize dynamic weights
+    init_dynamic_weights()
+    
+    -- Select the first challenge
+    current_challenge = select_weighted_challenge()
+    
     local challenge = challenge_handlers[current_challenge]
     if challenge then
         print("Loading challenge: " .. challenge.game_slug)
+        -- print_weights()  -- Print initial weights
         client.openrom(challenge.rom_path)
         savestate.load(challenge.savestate_path)
     end
@@ -203,6 +302,14 @@ end
 local prev_t_state = false
 
 while true do
+    -- Update frames counter for weight recovery
+    frames_since_last_change = frames_since_last_change + 1
+    
+    -- Update weights every 60 frames (about once per second)
+    if frames_since_last_change % 60 == 0 then
+        update_weights()
+    end
+    
     -- Check if it's time to switch challenges
     if switch_timer.active then
         switch_timer.frames_left = switch_timer.frames_left - 1
@@ -223,11 +330,31 @@ while true do
     -- Get the current challenge handler
     local handler = challenge_handlers[current_challenge].handler
     
-    -- Execute the handler with state
-    if handler then
-        local seconds_to_switch = handler(state, function()
+    -- Initialize reset timer
+    state.reset_timer = state.reset_timer or { active = false, frames_left = 0 }
+    
+    -- Check if reset timer is active
+    if state.reset_timer.active then
+        state.reset_timer.frames_left = state.reset_timer.frames_left - 1
+        if state.reset_timer.frames_left <= 0 then
+            state.reset_timer.active = false
             state = {} -- reset state
             savestate.load(challenge_handlers[current_challenge].savestate_path) -- reload save state
+        end
+    end
+    
+    -- Execute the handler with state
+    if handler then
+        local seconds_to_switch = handler(state, function(seconds)
+            if seconds and type(seconds) == "number" then
+                -- Set up delayed reset
+                state.reset_timer.active = true
+                state.reset_timer.frames_left = seconds_to_frames(seconds)
+            else
+                -- Immediate reset
+                state = {} -- reset state
+                savestate.load(challenge_handlers[current_challenge].savestate_path) -- reload save state
+            end
         end)
         
         -- If handler returns a number, schedule a challenge switch

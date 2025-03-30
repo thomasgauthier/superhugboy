@@ -154,7 +154,9 @@ local current_rom_path = nil  -- Track the current ROM path
 local dynamic_weights = {}
 local base_weight_multiplier = 1.0  -- Base weight multiplier
 local played_penalty = 0.05         -- Weight after being played (5% of original)
-local recovery_rate = 0.012          -- Weight recovery per frame (2% per frame)
+local recovery_rate = 0.012         -- Weight recovery per second (2% per second)
+local DateTime = luanet.System.DateTime
+local last_weight_update = DateTime.UtcNow -- Track last weight update time
 local frames_since_last_change = 0  -- Track frames for weight recovery
 
 -- Initialize dynamic weights based on challenge handler weights
@@ -241,7 +243,7 @@ local switch_timer = {
 
 -- Interlude timer
 local interlude_timer = {
-    last_interlude = os.time(),
+    last_interlude = DateTime.UtcNow,
     interval = 5  -- 5 seconds
 }
 
@@ -270,10 +272,8 @@ end
 -- Switch to the next challenge
 local function switch_to_next_challenge()
     -- Check if it's time for an interlude
+    local current_time = DateTime.UtcNow
 
-    local current_time = os.time()
-
-    -- if fi
     if current_challenge == "interlude" then
         interlude_timer.last_interlude = current_time
     end
@@ -285,8 +285,9 @@ local function switch_to_next_challenge()
 
     local next_challenge = nil
 
-    local current_time = os.time()
-    if current_time - interlude_timer.last_interlude >= interlude_timer.interval then
+    local current_time = DateTime.UtcNow
+    local time_diff = (current_time - interlude_timer.last_interlude).TotalSeconds
+    if time_diff >= interlude_timer.interval then
         print("interlude")
         next_challenge = "interlude"
     else
@@ -361,15 +362,17 @@ while true do
     -- Update frames counter for weight recovery
     frames_since_last_change = frames_since_last_change + 1
     
-    -- Update weights every 60 frames (about once per second)
-    if frames_since_last_change % 60 == 0 then
+    -- Update weights every second using DateTime
+    local current_time = DateTime.UtcNow
+    local time_diff = (current_time - last_weight_update).TotalSeconds
+    if time_diff >= 1 then
         update_weights()
+        last_weight_update = current_time
     end
     
     -- Display time until next interlude
-    local current_time = os.time()
-    local time_until_interlude = interlude_timer.interval - (current_time - interlude_timer.last_interlude)
-    gui.drawText(10, 50, string.format("Time until interlude: %d seconds", time_until_interlude), "white", "black")
+    local time_until_interlude = interlude_timer.interval - (current_time - interlude_timer.last_interlude).TotalSeconds
+    gui.drawText(10, 50, string.format("Time until interlude: %.1f seconds", time_until_interlude), "white", "black")
     
     -- Check if it's time to switch challenges
     if switch_timer.active then

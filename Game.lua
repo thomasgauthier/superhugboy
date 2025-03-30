@@ -45,22 +45,21 @@ local challenge_text_timer = 5
 ]]
 
 local challenge_modules_repository = {
-    require("./challenges/LinksAwakening"),
-    require("./challenges/StreetFighter"),
-    require("./challenges/Metroid"),
-    require("./challenges/Pokemon"),
-    require("./challenges/Sonic"),
-    require("./challenges/StreetsofRage2"),
-    require("./challenges/ALinkToThePast"),
-    require("./challenges/Kirby"),
-    require("./challenges/DonkeyKongCountry"),
-    require("./challenges/Pinball"),
-    -- require("./challenges/Tetris"),
-    require("./challenges/Castlevania"),
-    require("./challenges/Zelda1"),
-    require("./challenges/Megaman"),
-    require("./challenges/Mario1"),
-    require("./challenges/Mario3"),
+     require("./challenges/LinksAwakening"),
+     require("./challenges/StreetFighter"),
+     require("./challenges/Metroid"),
+     require("./challenges/Pokemon"),
+     require("./challenges/Sonic"),
+     require("./challenges/StreetsofRage2"),
+     require("./challenges/ALinkToThePast"),
+     require("./challenges/Kirby"),
+     require("./challenges/DonkeyKongCountry"),
+     require("./challenges/Tetris"),
+     require("./challenges/Castlevania"),
+     require("./challenges/Zelda1"),
+     require("./challenges/Megaman"),
+     require("./challenges/Mario1"),
+     require("./challenges/Mario3"),
 }
 
 
@@ -246,10 +245,10 @@ local switch_timer = {
 -- Interlude timer
 local interlude_timer = {
     last_interlude = DateTime.UtcNow,
-    interval = 5  -- 5 seconds
+    interval = 180  -- 5 seconds
 }
 
-challenge_handlers['interlude'] = require("./challenges/Tetris")[1]
+challenge_handlers['interlude'] = require("./challenges/MarioWorldInterlude")[1]
 
 -- Get the current core's FPS
 local function get_core_fps()
@@ -461,7 +460,7 @@ while true do
 
                     gui.cleartext()
                 else
-                    gui.drawText(x_pos, y_pos, challenge.challenge_text, "yellow", "black")
+                    gui.drawText(x_pos, y_pos, challenge.challenge_text, "yellow", "black", nil, nil, nil, "center")
                 end
             end
             

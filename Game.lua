@@ -43,21 +43,22 @@ local challenge_text_timer = 5
 ]]
 
 local challenge_modules_repository = {
-    -- require("./challenges/LinksAwakening"),
-    -- require("./challenges/StreetFighter"),
-    -- require("./challenges/Metroid"),
-    -- -- require("./challenges/Pokemon"),
-    -- require("./challenges/Sonic"),
-    -- require("./challenges/StreetsofRage2"),
-    -- require("./challenges/ALinkToThePast"),
-    -- require("./challenges/Kirby"),
+    require("./challenges/LinksAwakening"),
+    require("./challenges/StreetFighter"),
+    require("./challenges/Metroid"),
+    require("./challenges/Pokemon"),
+    require("./challenges/Sonic"),
+    require("./challenges/StreetsofRage2"),
+    require("./challenges/ALinkToThePast"),
+    require("./challenges/Kirby"),
     require("./challenges/DonkeyKongCountry"),
+    require("./challenges/Pinball"),
     -- require("./challenges/Tetris"),
-    -- require("./challenges/Castlevania"),
-    -- require("./challenges/Zelda1"),
-    -- require("./challenges/Megaman"),
-    -- require("./challenges/Mario1"),
-    -- require("./challenges/Mario3"),
+    require("./challenges/Castlevania"),
+    require("./challenges/Zelda1"),
+    require("./challenges/Megaman"),
+    require("./challenges/Mario1"),
+    require("./challenges/Mario3"),
 }
 
 
@@ -168,7 +169,10 @@ local function select_weighted_challenge()
     -- Calculate total weight
     local total_weight = 0
     for i, weight in ipairs(dynamic_weights) do
-        total_weight = total_weight + weight
+        -- Skip the interlude when calculating weights
+        if i ~= "interlude" then
+            total_weight = total_weight + weight
+        end
     end
     
     -- Select a random value within the total weight
@@ -177,14 +181,24 @@ local function select_weighted_challenge()
     -- Find which challenge was selected
     local cumulative_weight = 0
     for i, weight in ipairs(dynamic_weights) do
-        cumulative_weight = cumulative_weight + weight
-        if selection <= cumulative_weight then
-            return i
+        -- Skip the interlude when selecting
+        if i ~= "interlude" then
+            cumulative_weight = cumulative_weight + weight
+            if selection <= cumulative_weight then
+                return i
+            end
         end
     end
     
     -- Fallback (should rarely happen due to floating-point precision)
-    return math.random(#challenge_handlers)
+    -- Make sure to exclude interlude from random selection
+    local valid_indices = {}
+    for i = 1, #challenge_handlers do
+        if i ~= "interlude" then
+            table.insert(valid_indices, i)
+        end
+    end
+    return valid_indices[math.random(#valid_indices)]
 end
 
 -- Update the weights of all challenges
@@ -225,6 +239,14 @@ local switch_timer = {
     frames_left = 0
 }
 
+-- Interlude timer
+local interlude_timer = {
+    last_interlude = os.time(),
+    interval = 5  -- 5 seconds
+}
+
+challenge_handlers['interlude'] = require("./challenges/Tetris")[1]
+
 -- Get the current core's FPS
 local function get_core_fps()
     return client.get_approx_framerate() or 60 -- Fallback to 60 if function not available
@@ -247,11 +269,31 @@ end
 
 -- Switch to the next challenge
 local function switch_to_next_challenge()
+    -- Check if it's time for an interlude
+
+    local current_time = os.time()
+
+    -- if fi
+    if current_challenge == "interlude" then
+        interlude_timer.last_interlude = current_time
+    end
+
+    
     -- Reduce weight of current challenge
     reduce_weight(current_challenge)
+
+
+    local next_challenge = nil
+
+    local current_time = os.time()
+    if current_time - interlude_timer.last_interlude >= interlude_timer.interval then
+        print("interlude")
+        next_challenge = "interlude"
+    else
+        next_challenge = select_weighted_challenge()
+    end
     
     -- Select next challenge based on weights
-    local next_challenge = select_weighted_challenge()
     
     -- Avoid playing the same challenge twice in a row if possible
     if next_challenge == current_challenge and #challenge_handlers > 1 then
@@ -323,6 +365,11 @@ while true do
     if frames_since_last_change % 60 == 0 then
         update_weights()
     end
+    
+    -- Display time until next interlude
+    local current_time = os.time()
+    local time_until_interlude = interlude_timer.interval - (current_time - interlude_timer.last_interlude)
+    gui.drawText(10, 50, string.format("Time until interlude: %d seconds", time_until_interlude), "white", "black")
     
     -- Check if it's time to switch challenges
     if switch_timer.active then

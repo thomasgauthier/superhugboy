@@ -1,3 +1,5 @@
+local DEBUG = false
+
 function reloadAll()
     -- Store the currently loaded module names
     local loaded = {}
@@ -371,8 +373,10 @@ while true do
     end
     
     -- Display time until next interlude
-    local time_until_interlude = interlude_timer.interval - (current_time - interlude_timer.last_interlude).TotalSeconds
-    gui.drawText(10, 50, string.format("Time until interlude: %.1f seconds", time_until_interlude), "white", "black")
+    if DEBUG then
+        local time_until_interlude = interlude_timer.interval - (current_time - interlude_timer.last_interlude).TotalSeconds
+        gui.drawText(10, 50, string.format("Time until interlude: %.1f seconds", time_until_interlude), "white", "black")
+    end
     
     -- Check if it's time to switch challenges
     if switch_timer.active then
@@ -463,9 +467,11 @@ while true do
             
             -- Display switch timer if active
             if switch_timer.active then
-                local fps = get_core_fps()
-                local seconds_left = math.ceil(switch_timer.frames_left / fps)
-                gui.drawText(10, 30, "Next challenge in: " .. seconds_left .. "s", "white", "black")
+                if DEBUG then
+                    local fps = get_core_fps()
+                    local seconds_left = math.ceil(switch_timer.frames_left / fps)
+                    gui.drawText(10, 30, "Next challenge in: " .. seconds_left .. "s", "white", "black")
+                end
             end
         end
 

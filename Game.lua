@@ -460,7 +460,7 @@ while true do
 
                     gui.cleartext()
                 else
-                    gui.drawText(x_pos, y_pos, challenge.challenge_text, "yellow", "black", nil, nil, nil, "center")
+                    gui.drawText(x_pos, y_pos, challenge.challenge_text, "yellow", "black", 14, nil, "bold", "center")
                 end
             end
             

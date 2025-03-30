@@ -8,7 +8,7 @@ return {
         rom_path = rom_path,
         savestate_path = "game_data/states/Kirby's Adventure - mini boss.State",
         challenge_text = "Defeat the boss!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 128, y = 64 },
         weight = 1,
         handler = function(state, reset)
             local score_addr = 0x0593
@@ -36,7 +36,7 @@ return {
         rom_path = rom_path,
         savestate_path = "game_data/states/Kirby's Adventure - level 1 (until door).State",
         challenge_text = "Reach the door!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 128, y = 64 },
         weight = 1,
         handler = function(state, reset)
             local check_addr = 0x058E

@@ -6,7 +6,7 @@ return {
         rom_path = "game_data/ROMS/Streets of Rage 2 (USA).zip",
         savestate_path = "game_data/states/Streets of Rage 2 - mini boss 1.State",
         challenge_text = "Defeat the boss!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 160, y = 96 },
         weight = 1,
         handler = function(state, reset)
             local playerhp_addr = 0xEFA8

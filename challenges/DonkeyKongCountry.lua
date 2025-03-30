@@ -6,7 +6,7 @@ return {
         rom_path = "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).zip",
         savestate_path = "game_data/states/Donkey Kong Country - level 1.State",
         challenge_text = "Finish the level!",
-        challenge_text_pos = { x = 68, y = 96 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = function(state, reset)
             local game_state_addr = 0x0040
@@ -39,7 +39,7 @@ return {
         rom_path = "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).zip",
         savestate_path = "game_data/states/Donkey Kong Country - barrel level.State",
         challenge_text = "Pass the barrels!",
-        challenge_text_pos = { x = 68, y = 96 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = function(state, reset)
             local game_state_addr = 0x0040
@@ -77,7 +77,7 @@ return {
         rom_path = "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).zip",
         savestate_path = "game_data/states/Donkey Kong Country - boss 1.State",
         challenge_text = "Beat the boss!",
-        challenge_text_pos = { x = 74, y = 96 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = function(state, reset)
             local game_state_addr = 0x0040

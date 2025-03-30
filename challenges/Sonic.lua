@@ -6,7 +6,7 @@ return {
         rom_path = "game_data/ROMS/Sonic The Hedgehog (USA, Europe).zip",
         savestate_path = "game_data/states/Sonic The Hedgehog - level 1.State",
         challenge_text = "Beat the level!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 160, y = 96 },
         weight = 1,
         handler = function(state, reset)
             local lives = mainmemory.read_s16_be(0xFE12)

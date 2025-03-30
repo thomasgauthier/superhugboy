@@ -6,7 +6,7 @@ return {
         rom_path = "game_data/ROMS/Pokemon - Red Version (USA, Europe) (SGB Enhanced).zip",
         savestate_path = "game_data/states/Pokemon Red - choose pokemon.State",
         challenge_text = "Choose a pokémon!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 80, y = 32 },
         weight = 1,
         handler = function(state, reset)
             local pokemon_in_team = mainmemory.readbyte(0x1163)

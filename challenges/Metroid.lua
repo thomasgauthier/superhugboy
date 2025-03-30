@@ -6,7 +6,7 @@ return {
         rom_path = "game_data/ROMS/Super Metroid (Japan, USA) (En,Ja).zip",
         savestate_path = "game_data/states/Super Metroid - First Escape.State",
         challenge_text = "Escape!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = function(state, reset)
             local game_state = mainmemory.read_u16_le(0x000998)

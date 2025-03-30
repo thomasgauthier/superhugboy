@@ -6,7 +6,7 @@ return {
         rom_path = "game_data/ROMS/Legend of Zelda, The - Link's Awakening DX (USA, Europe) (SGB Enhanced).zip",
         savestate_path = "game_data/states/Link's Awakening - mini boss.State",
         challenge_text = "Defeat the boss!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 80, y = 32 },
         weight = 1,
         handler = function(state, reset)
             local enemy_hp = mainmemory.readbyte(0x364)

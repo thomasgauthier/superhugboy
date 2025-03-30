@@ -24,7 +24,7 @@ return {
         rom_path = "game_data/ROMS/Street Fighter II Turbo (USA) (Rev 1).zip",
         savestate_path = "game_data/states/Street Fighter II Turbo - blanka vs dhalsim.State",
         challenge_text = "Win the fight!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = handler
     },
@@ -33,7 +33,7 @@ return {
         rom_path = "game_data/ROMS/Street Fighter II Turbo (USA) (Rev 1).zip",
         savestate_path = "game_data/states/Street Fighter II Turbo - ryu vs guile.State",
         challenge_text = "Win the fight!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = handler
     },

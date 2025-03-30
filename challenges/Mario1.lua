@@ -20,7 +20,7 @@ return {
         rom_path = rom_path,
         savestate_path = "game_data/states/Super Mario Bros - castle.State",
         challenge_text = "Defeat Bowser!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = function(state, reset)
             -- Check enemy types in memory
@@ -57,7 +57,7 @@ return {
         rom_path = rom_path,
         savestate_path = "game_data/states/Super Mario Bros - 1-1.State",
         challenge_text = "Beat the level!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = function(state, reset)
             local player_state = mainmemory.readbyte(0x000E)

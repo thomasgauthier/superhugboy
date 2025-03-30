@@ -53,7 +53,7 @@ return {
         rom_path = rom_path,
         savestate_path = "game_data/states/Mega Man - bomb man.State",
         challenge_text = challenge_text,
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = handler
     },
@@ -62,7 +62,7 @@ return {
         rom_path = rom_path,
         savestate_path = "game_data/states/Mega Man - fire man.State",
         challenge_text = challenge_text,
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = handler
     },
@@ -71,7 +71,7 @@ return {
         rom_path = rom_path,
         savestate_path = "game_data/states/Mega Man - cut man.State",
         challenge_text = challenge_text,
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = handler
     }

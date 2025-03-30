@@ -27,7 +27,7 @@ return {
         rom_path = rom_path,
         savestate_path = "game_data/states/Super Mario Bros. 3 - first mini boss.State",
         challenge_text = "Beat the boss!",
-        challenge_text_pos = { x = 74, y = 96 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = function(state)
             local trigger_addr = 0x05F3
@@ -53,7 +53,7 @@ return {
         rom_path = rom_path,
         savestate_path = "game_data/states/Super Mario Bros. 3 - crushing ceiling.State",
         challenge_text = "Reach the door!",
-        challenge_text_pos = { x = 70, y = 96 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = function(state)
             local check_addr = 0x0075
@@ -79,7 +79,7 @@ return {
         rom_path = rom_path,
         savestate_path = "game_data/states/Super Mario Bros. 3 - hammer bro.State",
         challenge_text = "Beat the hammer bro!",
-        challenge_text_pos = { x = 58, y = 72 },
+        challenge_text_pos = { x = 128, y = 72 },
         weight = 1,
         handler = function(state)
             local check_addr = 0x0075

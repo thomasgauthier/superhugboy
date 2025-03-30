@@ -6,7 +6,7 @@ return {
         rom_path = "game_data/ROMS/Castlevania (USA) (Rev A).zip",
         savestate_path = "game_data/states/Castlevania - level 1.State",
         challenge_text = "Finish the screen!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = function(state, reset)
             local trigger_addr = 0x0018

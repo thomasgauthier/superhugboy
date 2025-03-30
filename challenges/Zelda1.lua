@@ -6,8 +6,8 @@ return {
         game_slug = "zelda1",
         rom_path = "game_data/ROMS/Legend of Zelda, The (USA) (Rev 1).zip",
         savestate_path =  "game_data/states/Legend of Zelda - take this.State",
-        challenge_text = "Act out the legend!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text = "",
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = function(state, reset)
             -- Address to check for the "take this" event
@@ -56,7 +56,7 @@ return {
         rom_path = "game_data/ROMS/Legend of Zelda, The (USA) (Rev 1).zip",
         savestate_path = "game_data/states/Legend of Zelda - boss 1.State",
         challenge_text = "Defeat the boss!",
-        challenge_text_pos = { x = 100, y = 100 },
+        challenge_text_pos = { x = 128, y = 96 },
         weight = 1,
         handler = function(state, reset)
             local health_addr = 0x066F

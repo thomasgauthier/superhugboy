@@ -63,6 +63,7 @@ local challenge_modules_repository = {
     require("./challenges/Mario3"),
     require("./challenges/Earthbound"),
     require("./challenges/Starfox"),
+    require("./challenges/Super Bomberman"),
 }
 
 

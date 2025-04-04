@@ -156,8 +156,8 @@ local current_rom_path = nil  -- Track the current ROM path
 -- Dynamic weight system parameters
 local dynamic_weights = {}
 local base_weight_multiplier = 1.0  -- Base weight multiplier
-local played_penalty = 0.05         -- Weight after being played (5% of original)
-local recovery_rate = 0.012         -- Weight recovery per second (2% per second)
+local played_penalty = 0.01         -- Weight after being played (1% of original)
+local recovery_rate = 0.004         -- Weight recovery per second
 local DateTime = luanet.System.DateTime
 local last_weight_update = DateTime.UtcNow -- Track last weight update time
 local frames_since_last_change = 0  -- Track frames for weight recovery
@@ -283,7 +283,9 @@ local function switch_to_next_challenge()
 
     
     -- Reduce weight of current challenge
-    reduce_weight(current_challenge)
+    if current_challenge ~= "interlude" then
+        reduce_weight(current_challenge)
+    end
 
 
     local next_challenge = nil

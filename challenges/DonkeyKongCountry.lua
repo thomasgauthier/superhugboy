@@ -84,13 +84,13 @@ return {
             local lives_addr = 0x0575
             local game_state = memory.readbyte(game_state_addr)
             local lives = memory.readbyte(lives_addr)
-            local whatever_this_is = mainmemory.read_u16_le(0x000B20)
+            local boss_hp = mainmemory.read_u8(0x001503)
 
             state.prev_game_state = state.prev_game_state or game_state
             state.prev_lives = state.prev_lives or lives
 
-            if whatever_this_is == 1 then
-                return 0.8
+            if boss_hp == 0 then
+                return 2.6
             end
 
             if state.prev_game_state ~= 12 and game_state == 12 then

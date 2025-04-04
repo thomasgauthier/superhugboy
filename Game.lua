@@ -64,6 +64,7 @@ local challenge_modules_repository = {
     require("./challenges/Earthbound"),
     require("./challenges/Starfox"),
     require("./challenges/Super Bomberman"),
+    require("./challenges/River City Ransom"),
 }
 
 

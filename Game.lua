@@ -60,7 +60,9 @@ local games = {
     "./challenges/Zelda1",
     "./challenges/Megaman",
     "./challenges/Mario1",
+    "./challenges/MarioWorld",
     "./challenges/Mario3",
+    "./challenges/Super Bomberman",
     "./challenges/Earthbound",
     "./challenges/Starfox",
     "./challenges/River City Ransom"
@@ -238,6 +240,8 @@ local function reduce_weight(challenge_index)
             dynamic_weights[i] = dynamic_weights[i] / 2
         end
     end
+
+    dynamic_weights[challenge_index] = original_weight * played_penalty
 end
 
 -- Print the current weights (for debugging)
@@ -347,6 +351,7 @@ local function switch_to_next_challenge()
         end
         
         savestate.load(challenge.savestate_path)
+        print_weights()
     end
 end
 

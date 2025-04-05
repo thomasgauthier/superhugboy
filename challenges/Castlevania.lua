@@ -24,7 +24,7 @@ return {
 
             if state.prev_death_value ~= 0 and death_value == 0 then
                 -- Return to switch after delay
-                return 0.8 -- Switch after 0.8 seconds (roughly 48 frames at 60fps)
+                return 1.6 -- Switch after 0.8 seconds (roughly 48 frames at 60fps)
             end
 
             state.prev_trigger_value = trigger_value

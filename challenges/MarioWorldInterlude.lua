@@ -16,7 +16,7 @@ return {
             gui.drawText(128, 109, "Continue?", "white", nil, 14, nil, "bold", "center")
             local magic_number = mainmemory.read_u16_le(0x000DDA)
             local popup_id = mainmemory.read_u16_le(0x0013D2)
-            mainmemory.writebyte(0x000F30, 255)
+            mainmemory.writebyte(0x000F30, 128)
 
             if popup_id == 1 then
                 return 0.8

@@ -17,6 +17,7 @@ return {
 
             if music_id == 147 then
                 return 0 
+            end
             
             return nil
         end

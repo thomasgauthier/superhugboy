@@ -28,7 +28,7 @@ return {
         savestate_path = "game_data/states/Super Mario Bros. 3 - first mini boss.State",
         challenge_text = "Beat the boss!",
         challenge_text_pos = { x = 128, y = 96 },
-        weight = 1,
+        weight = 0.5,
         handler = function(state)
             local trigger_addr = 0x05F3
             local trigger_value = memory.readbyte(trigger_addr)
@@ -54,7 +54,7 @@ return {
         savestate_path = "game_data/states/Super Mario Bros. 3 - crushing ceiling.State",
         challenge_text = "Reach the door!",
         challenge_text_pos = { x = 128, y = 96 },
-        weight = 1,
+        weight = 0.5,
         handler = function(state)
             local check_addr = 0x0075
             local current_value = memory.readbyte(check_addr)
@@ -80,7 +80,7 @@ return {
         savestate_path = "game_data/states/Super Mario Bros. 3 - hammer bro.State",
         challenge_text = "Beat the hammer bro!",
         challenge_text_pos = { x = 128, y = 72 },
-        weight = 1,
+        weight = 0.5,
         handler = function(state)
             local check_addr = 0x0075
             local current_value = memory.readbyte(check_addr)

@@ -161,9 +161,8 @@ local current_rom_path = nil  -- Track the current ROM path
 
 -- Dynamic weight system parameters
 local dynamic_weights = {}
-local base_weight_multiplier = 1.0  -- Base weight multiplier
 local played_penalty = 0.01         -- Weight after being played (1% of original)
-local recovery_rate = 0.05         -- Weight recovery per challenge start (was 0.004 per second)
+local recovery_rate = 1 / #challenge_handlers  -- Weight recovery per challenge start (was 0.004 per second)
 local DateTime = luanet.System.DateTime
 local last_weight_update = DateTime.UtcNow -- Track last weight update time
 local frames_since_last_change = 0  -- Track frames for weight recovery
@@ -217,7 +216,7 @@ local function update_weights()
     -- Increase weights of all challenges gradually
     for i = 1, #dynamic_weights do
         local original_weight = challenge_handlers[i].weight or 1.0
-        local max_weight = original_weight * base_weight_multiplier
+        local max_weight = original_weight
         
         -- Only increase weight if it's below the max
         if dynamic_weights[i] < max_weight then
@@ -238,6 +237,8 @@ local function reduce_weight(challenge_index)
     for i, game in ipairs(challenge_handlers_game_identifiers) do
         if game == current_game then
             dynamic_weights[i] = dynamic_weights[i] / 2
+
+            dynamic_weights[i] = math.max(played_penalty, dynamic_weights[i])
         end
     end
 

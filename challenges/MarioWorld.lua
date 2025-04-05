@@ -7,7 +7,7 @@ return {
         savestate_path = "game_data/states/Super Mario World - level 1.State",
         challenge_text = "Beat the level!",
         challenge_text_pos = { x = 128, y = 96 },
-        weight = 1,
+        weight = 0.5,
         handler = function(state, reset)
             local magic_number = mainmemory.read_u16_le(0x000DDA)
 
@@ -25,7 +25,7 @@ return {
         savestate_path = "game_data/states/Super Mario World - castle level.State",
         challenge_text = "Reach the door!",
         challenge_text_pos = { x = 128, y = 96 },
-        weight = 1,
+        weight = 0.5,
         handler = function(state, reset)
             local magic_number = mainmemory.read_u16_le(0x000DDA)
 
@@ -47,7 +47,7 @@ return {
         savestate_path = "game_data/states/Super Mario World - first boss.State",
         challenge_text = "Defeat the boss!",
         challenge_text_pos = { x = 128, y = 96 },
-        weight = 1,
+        weight = 0.5,
         handler = function(state, reset)
             local magic_number = mainmemory.read_u16_le(0x000DDA)
             local boss_number = mainmemory.read_u16_le(0x000A54)

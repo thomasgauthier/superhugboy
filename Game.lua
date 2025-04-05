@@ -44,35 +44,36 @@ local challenge_text_timer = 5
 }
 ]]
 
-local challenge_modules_repository = {
-    require("./challenges/LinksAwakening"),
-    require("./challenges/StreetFighter"),
-    require("./challenges/Metroid"),
-    require("./challenges/Metroid Classic"),
-    require("./challenges/Pokemon"),
-    require("./challenges/Sonic"),
-    require("./challenges/StreetsofRage2"),
-    require("./challenges/ALinkToThePast"),
-    require("./challenges/Kirby"),
-    require("./challenges/DonkeyKongCountry"),
-    require("./challenges/Tetris"),
-    require("./challenges/Castlevania"),
-    require("./challenges/Zelda1"),
-    require("./challenges/Megaman"),
-    require("./challenges/Mario1"),
-    require("./challenges/Mario3"),
-    require("./challenges/Earthbound"),
-    require("./challenges/Starfox"),
-    require("./challenges/Super Bomberman"),
-    require("./challenges/River City Ransom"),
+local games = {
+    "./challenges/LinksAwakening",
+    "./challenges/StreetFighter",
+    "./challenges/Metroid",
+    "./challenges/Metroid Classic",
+    "./challenges/Pokemon",
+    "./challenges/Sonic",
+    "./challenges/StreetsofRage2",
+    "./challenges/ALinkToThePast",
+    "./challenges/Kirby",
+    "./challenges/DonkeyKongCountry",
+    "./challenges/Tetris",
+    "./challenges/Castlevania",
+    "./challenges/Zelda1",
+    "./challenges/Megaman",
+    "./challenges/Mario1",
+    "./challenges/Mario3",
+    "./challenges/Earthbound",
+    "./challenges/Starfox",
+    "./challenges/River City Ransom"
 }
 
-
 local challenge_handlers = {}
+local challenge_handlers_game_identifiers = {}
 
-for _, v in ipairs(challenge_modules_repository) do
-    for _, handler in ipairs(v) do
+for _, game in ipairs(games) do
+    challenges = require(game)
+    for _, handler in ipairs(challenges) do
         table.insert(challenge_handlers, handler)
+        table.insert(challenge_handlers_game_identifiers, game)
     end
 end
 
@@ -160,7 +161,7 @@ local current_rom_path = nil  -- Track the current ROM path
 local dynamic_weights = {}
 local base_weight_multiplier = 1.0  -- Base weight multiplier
 local played_penalty = 0.01         -- Weight after being played (1% of original)
-local recovery_rate = 0.004         -- Weight recovery per second
+local recovery_rate = 0.05         -- Weight recovery per challenge start (was 0.004 per second)
 local DateTime = luanet.System.DateTime
 local last_weight_update = DateTime.UtcNow -- Track last weight update time
 local frames_since_last_change = 0  -- Track frames for weight recovery
@@ -229,7 +230,14 @@ end
 -- Reduce weight after a challenge is played
 local function reduce_weight(challenge_index)
     local original_weight = challenge_handlers[challenge_index].weight or 1.0
-    dynamic_weights[challenge_index] = original_weight * played_penalty
+    local current_game = challenge_handlers_game_identifiers[challenge_index]
+    
+    -- Reduce weight for all challenges from the same game
+    for i, game in ipairs(challenge_handlers_game_identifiers) do
+        if game == current_game then
+            dynamic_weights[i] = dynamic_weights[i] / 2
+        end
+    end
 end
 
 -- Print the current weights (for debugging)
@@ -284,6 +292,8 @@ local function switch_to_next_challenge()
         interlude_timer.last_interlude = current_time
     end
 
+    -- Update weights of all challenges when a new challenge starts
+    update_weights()
     
     -- Reduce weight of current challenge
     if current_challenge ~= "interlude" then
@@ -369,14 +379,6 @@ local prev_t_state = false
 while true do
     -- Update frames counter for weight recovery
     frames_since_last_change = frames_since_last_change + 1
-    
-    -- Update weights every second using DateTime
-    local current_time = DateTime.UtcNow
-    local time_diff = (current_time - last_weight_update).TotalSeconds
-    if time_diff >= 1 then
-        update_weights()
-        last_weight_update = current_time
-    end
     
     -- Display time until next interlude
     if DEBUG then

@@ -353,7 +353,7 @@ local function switch_to_next_challenge()
         end
         
         savestate.load(challenge.savestate_path)
-        print_weights()
+        -- print_weights()
     end
 end
 

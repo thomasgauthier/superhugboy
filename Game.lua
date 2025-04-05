@@ -65,7 +65,8 @@ local games = {
     "./challenges/Super Bomberman",
     "./challenges/Earthbound",
     "./challenges/Starfox",
-    "./challenges/River City Ransom"
+    "./challenges/River City Ransom",
+    "./challenges/Gradius",
 }
 
 local challenge_handlers = {}

@@ -1,7 +1,22 @@
 
 #include <SDL.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 #include "libretro.h"
 #include "glad.h"
+
+/* Baked game payload (build/baked_rom.c, build/baked_state.c), compiled into
+ * the binary by the Makefile. Used when no ROM/savestate is passed on the CLI. */
+extern unsigned char baked_rom[];
+extern unsigned int  baked_rom_len;
+extern unsigned char baked_state[];
+extern unsigned int  baked_state_len;
+extern unsigned char baked_level1[];
+extern unsigned int  baked_level1_len;
+extern unsigned char baked_castle[];
+extern unsigned int  baked_castle_len;
 
 static SDL_Window *g_win = NULL;
 static SDL_GLContext *g_ctx = NULL;
@@ -65,8 +80,9 @@ static const char *g_fshader_src =
     "#version 150\n"
     "in vec2 o_coord;\n"
     "uniform sampler2D u_tex;\n"
+    "out vec4 o_color;\n"
     "void main() {\n"
-        "gl_FragColor = texture2D(u_tex, o_coord);\n"
+        "o_color = texture(u_tex, o_coord);\n"
     "}";
 
 
@@ -96,8 +112,8 @@ static struct {
 //	bool retro_load_game_special(unsigned game_type, const struct retro_game_info *info, size_t num_info);
 	void (*retro_unload_game)(void);
 //	unsigned retro_get_region(void);
-//	void *retro_get_memory_data(unsigned id);
-//	size_t retro_get_memory_size(unsigned id);
+	void *(*retro_get_memory_data)(unsigned id);
+	size_t (*retro_get_memory_size)(unsigned id);
 } g_retro;
 
 
@@ -123,6 +139,9 @@ static struct keymap g_binds[] = {
 };
 
 static unsigned g_joy[RETRO_DEVICE_ID_JOYPAD_R3+1] = { 0 };
+
+static char g_game_path[4096] = "";
+static bool g_game_loaded = false;
 
 #define load_sym(V, S) do {\
     if (!((*(void**)&V) = SDL_LoadFunction(g_retro.handle, #S))) \
@@ -261,6 +280,14 @@ static void refresh_vertex_data() {
 
 static void init_framebuffer(int width, int height)
 {
+    /* Re-entrant: drop previous FBO/RBO before regenerating (ROM swaps). */
+    if (g_video.fbo_id)
+        glDeleteFramebuffers(1, &g_video.fbo_id);
+    if (g_video.rbo_id)
+        glDeleteRenderbuffers(1, &g_video.rbo_id);
+    g_video.fbo_id = 0;
+    g_video.rbo_id = 0;
+
     glGenFramebuffers(1, &g_video.fbo_id);
     glBindFramebuffer(GL_FRAMEBUFFER, g_video.fbo_id);
 
@@ -305,38 +332,78 @@ static void create_window(int width, int height) {
     SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
 
-    if (g_video.hw.context_type == RETRO_HW_CONTEXT_OPENGL_CORE || g_video.hw.version_major >= 3) {
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, g_video.hw.version_major);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, g_video.hw.version_minor);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
-    }
-
-    switch (g_video.hw.context_type) {
-    case RETRO_HW_CONTEXT_OPENGL_CORE:
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-        break;
-    case RETRO_HW_CONTEXT_OPENGLES2:
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-        break;
-    case RETRO_HW_CONTEXT_OPENGL:
-        if (g_video.hw.version_major >= 3)
-            SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
-        break;
-    default:
-        die("Unsupported hw context %i. (only OPENGL, OPENGL_CORE and OPENGLES2 supported)", g_video.hw.context_type);
-    }
-
     g_win = SDL_CreateWindow("sdlarch", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_OPENGL);
 
 	if (!g_win)
         die("Failed to create window: %s", SDL_GetError());
 
-    g_ctx = SDL_GL_CreateContext(g_win);
+    /* Build an ordered list of candidate GL contexts. macOS only provides
+     * OpenGL up to 4.1 core (the API is deprecated there), so the requested
+     * version may need to fall back. We also avoid the debug flag, which
+     * macOS rejects. */
+    int major_candidates[8], minor_candidates[8], profile_candidates[8];
+    int n = 0;
 
-    SDL_GL_MakeCurrent(g_win, g_ctx);
+    switch (g_video.hw.context_type) {
+    case RETRO_HW_CONTEXT_OPENGLES2:
+    case RETRO_HW_CONTEXT_OPENGLES3:
+    case RETRO_HW_CONTEXT_OPENGLES_VERSION:
+        major_candidates[n] = g_video.hw.version_major ? g_video.hw.version_major : 2;
+        minor_candidates[n] = g_video.hw.version_minor;
+        profile_candidates[n] = SDL_GL_CONTEXT_PROFILE_ES;
+        n++;
+        break;
+    case RETRO_HW_CONTEXT_OPENGL_CORE:
+    default: {
+        /* Desktop GL: try the requested version first, then walk down to
+         * versions that macOS can actually deliver. */
+        const int req_major[] = {
+            g_video.hw.version_major, 4, 4, 3, 3, 2,
+        };
+        const int req_minor[] = {
+            g_video.hw.version_minor, 1, 0, 3, 2, 1,
+        };
+        /* Core profile for >= 3.2 (we need it for our #version 150 shaders);
+         * fall back to legacy at the very end. */
+        const int is_core[] = { 1, 1, 1, 1, 1, 0 };
+
+        for (int i = 0; i < 6; ++i) {
+            int profile = is_core[i] ? SDL_GL_CONTEXT_PROFILE_CORE
+                                     : SDL_GL_CONTEXT_PROFILE_COMPATIBILITY;
+            int dup = 0;
+            for (int j = 0; j < n; ++j)
+                if (major_candidates[j] == req_major[i] &&
+                    minor_candidates[j] == req_minor[i] &&
+                    profile_candidates[j] == profile)
+                    dup = 1;
+            if (dup)
+                continue;
+            major_candidates[n] = req_major[i];
+            minor_candidates[n] = req_minor[i];
+            profile_candidates[n] = profile;
+            n++;
+        }
+        break;
+    }
+    }
+
+    g_ctx = NULL;
+    for (int i = 0; i < n && !g_ctx; ++i) {
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, major_candidates[i]);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, minor_candidates[i]);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, profile_candidates[i]);
+        g_ctx = SDL_GL_CreateContext(g_win);
+        if (g_ctx) {
+            g_video.hw.version_major = major_candidates[i];
+            g_video.hw.version_minor = minor_candidates[i];
+        }
+    }
 
     if (!g_ctx)
         die("Failed to create OpenGL context: %s", SDL_GetError());
+
+    SDL_GL_MakeCurrent(g_win, g_ctx);
 
     if (g_video.hw.context_type == RETRO_HW_CONTEXT_OPENGLES2) {
         if (!gladLoadGLES2Loader((GLADloadproc)SDL_GL_GetProcAddress))
@@ -526,6 +593,13 @@ static void video_deinit() {
 
 
 static void audio_init(int frequency) {
+    /* Re-entrant: keep the existing device across ROM swaps. */
+    if (g_pcm) {
+        if (audio_callback.set_state)
+            audio_callback.set_state(true);
+        return;
+    }
+
     SDL_AudioSpec desired;
     SDL_AudioSpec obtained;
 
@@ -883,10 +957,13 @@ static void core_load(const char *sofile) {
 	load_retro_sym(retro_set_controller_port_device);
 	load_retro_sym(retro_reset);
 	load_retro_sym(retro_run);
+	load_retro_sym(retro_serialize_size);
+	load_retro_sym(retro_serialize);
+	load_retro_sym(retro_unserialize);
 	load_retro_sym(retro_load_game);
 	load_retro_sym(retro_unload_game);
-	load_retro_sym(retro_serialize_size);
-	load_retro_sym(retro_unserialize);
+	load_retro_sym(retro_get_memory_data);
+	load_retro_sym(retro_get_memory_size);
 
 	load_sym(set_environment, retro_set_environment);
 	load_sym(set_video_refresh, retro_set_video_refresh);
@@ -909,7 +986,10 @@ static void core_load(const char *sofile) {
 }
 
 
-static void core_load_game(const char *filename) {
+/* Load a game into the loaded core. Returns false (without killing the
+ * process) if the file cannot be read or the core refuses it, so the
+ * challenge engine can drop the offending challenge and try the next one. */
+static bool core_load_game(const char *filename) {
 	struct retro_system_av_info av = {0};
 	struct retro_system_info system = {0};
 	struct retro_game_info info = { filename, 0 };
@@ -926,32 +1006,53 @@ static void core_load_game(const char *filename) {
             SDL_RWops *file = SDL_RWFromFile(filename, "rb");
             Sint64 size;
 
-            if (!file)
-                die("Failed to load %s: %s", filename, SDL_GetError());
+            if (!file) {
+                fprintf(stderr, "[core] cannot open %s: %s\n", filename, SDL_GetError());
+                return false;
+            }
 
             size = SDL_RWsize(file);
 
-            if (size < 0)
-                die("Failed to query game file size: %s", SDL_GetError());
+            if (size < 0) {
+                fprintf(stderr, "[core] cannot stat %s: %s\n", filename, SDL_GetError());
+                SDL_RWclose(file);
+                return false;
+            }
 
             info.size = size;
             info.data = SDL_malloc(info.size);
 
-            if (!info.data)
-                die("Failed to allocate memory for the content");
+            if (!info.data) {
+                fprintf(stderr, "[core] OOM for %s\n", filename);
+                SDL_RWclose(file);
+                return false;
+            }
 
-            if (!SDL_RWread(file, (void*)info.data, info.size, 1))
-                die("Failed to read file data: %s", SDL_GetError());
+            if (!SDL_RWread(file, (void*)info.data, info.size, 1)) {
+                fprintf(stderr, "[core] failed to read %s: %s\n", filename, SDL_GetError());
+                SDL_RWclose(file);
+                SDL_free((void*)info.data);
+                return false;
+            }
 
             SDL_RWclose(file);
         }
     }
 
-	if (!g_retro.retro_load_game(&info))
-		die("The core failed to load the content.");
+	if (filename)
+		snprintf(g_game_path, sizeof(g_game_path), "%s", filename);
+
+	if (!g_retro.retro_load_game(&info)) {
+		fprintf(stderr, "[core] the core failed to load %s\n", filename ? filename : "(null)");
+        if (info.data)
+            SDL_free((void*)info.data);
+		return false;
+	}
+	g_game_loaded = true;
 
 	g_retro.retro_get_system_av_info(&av);
 	g_fps = av.timing.fps;
+
 	video_configure(&av.geometry);
 	audio_init(av.timing.sample_rate);
 
@@ -962,14 +1063,60 @@ static void core_load_game(const char *filename) {
     char window_title[255];
     snprintf(window_title, sizeof(window_title), "sdlarch %s %s", system.library_name, system.library_version);
     SDL_SetWindowTitle(g_win, window_title);
+    return true;
 }
 
+static void core_unload() {
+	g_game_loaded = false;
+	if (g_retro.initialized)
+		g_retro.retro_deinit();
+
+	if (g_retro.handle)
+        SDL_UnloadObject(g_retro.handle);
+}
+
+/* Serialize the core's current state to a native savestate on disk.
+ * Filename derives from the loaded game (e.g. "Super Mario World (USA).state"). */
+static void save_state_to_disk(void) {
+	size_t size = g_retro.retro_serialize_size ? g_retro.retro_serialize_size() : 0;
+	if (!size) { fprintf(stderr, "[savestate] core reports 0-size state\n"); return; }
+
+	void *buf = malloc(size);
+	if (!buf) { fprintf(stderr, "[savestate] buffer alloc failed\n"); return; }
+
+	if (!g_retro.retro_serialize(buf, size)) {
+		free(buf);
+		fprintf(stderr, "[savestate] retro_serialize failed\n");
+		return;
+	}
+
+	const char *base = g_game_path[0] ? g_game_path : "game";
+	const char *name = strrchr(base, '/');
+	name = name ? name + 1 : base;
+	char out[1024];
+	snprintf(out, sizeof(out), "%s", name);
+	char *dot = strrchr(out, '.');
+	if (dot) *dot = '\0';
+	strncat(out, ".state", sizeof(out) - strlen(out) - 1);
+
+	FILE *f = fopen(out, "wb");
+	if (!f) { free(buf); fprintf(stderr, "[savestate] cannot open %s\n", out); return; }
+	size_t wrote = fwrite(buf, 1, size, f);
+	fclose(f);
+	free(buf);
+	fprintf(stderr, "[savestate] wrote %zu/%zu bytes to %s\n", wrote, size, out);
+}
+
+/* Load a native savestate from disk via retro_unserialize. */
 static void core_load_state(const char *filename) {
 	if (!filename || !g_retro.retro_unserialize)
 		return;
 	SDL_RWops *file = SDL_RWFromFile(filename, "rb");
-	if (!file)
-		die("Failed to open state %s: %s", filename, SDL_GetError());
+	if (!file) {
+		/* Optional state: don't hard-fail if the file is absent. */
+		fprintf(stderr, "[state] skip %s: %s\n", filename, SDL_GetError());
+		return;
+	}
 	Sint64 size = SDL_RWsize(file);
 	if (size < 0)
 		die("Failed to query state file size: %s", SDL_GetError());
@@ -983,19 +1130,1102 @@ static void core_load_state(const char *filename) {
 	puts("State loaded");
 }
 
-static void core_unload() {
-	if (g_retro.initialized)
-		g_retro.retro_deinit();
+/* ============================================================================
+ * Generalized challenge engine
+ *
+ * Every BizHawk challenge handler in ../challenges/ is a DNF (disjunction of
+ * AND-groups) of RAM comparisons that fires one of three actions:
+ *
+ *   ACT_SWITCH    schedule a switch to the next challenge after wait_s
+ *                 (0 = next frame). Stops evaluating further rules for this
+ *                 frame (mirrors the Lua `return <seconds>`). While a switch
+ *                 is already pending, further matches are ignored (mirrors
+ *                 `if not switch_timer.active`).
+ *   ACT_RESET     reload the current challenge's savestate after wait_s
+ *                 (0 = next frame). Evaluation continues, and repeated calls
+ *                 refresh the timer (mirrors Lua `reset()`, which does not
+ *                 return and keeps resetting frames_left).
+ *   ACT_SET_LATCH set a one-shot flag consumed by FLAG_NEED_LATCH rules.
+ *                 Any SWITCH that matches clears the latch (mirrors the
+ *                 `state.boss_spawned = nil` lines in Streets of Rage 2).
+ *
+ * A sample reads one value from the core's system RAM ($7E:0000 WRAM on
+ * snes9x) with optional endianness, signedness, bit mask/shift, an additive
+ * offset, and a "prev" flag selecting the previous frame's value (kept in a
+ * shadow cache, mirroring the `state.prev_*` fields). A term compares a
+ * sample against a constant or another sample. A rule is an AND of terms;
+ * when all terms hold - optionally for N+1 consecutive frames
+ * (`stable_frames`, the Mega Man camera settle) - the rule's action fires.
+ * Zero-initialized terms carry op OP_NONE (0) and terminate a rule, and a
+ * rule with act ACT_NONE (0) terminates a rule list.
+ *
+ * Nothing in this section is game specific: the challenges[] table below is
+ * the data-driven port of the 24 Lua handler files in challenges/.
+ * ========================================================================== */
 
-	if (g_retro.handle)
-        SDL_UnloadObject(g_retro.handle);
+struct sample {
+    uint16_t addr;   /* offset from system-RAM base */
+    uint8_t  size;   /* 1 or 2 bytes */
+    uint8_t  be;     /* big-endian (0 = little) */
+    uint8_t  sgn;    /* sign-extend */
+    uint8_t  prev;   /* read the previous frame's value */
+    uint16_t mask;   /* applied before shift */
+    uint8_t  shift;  /* right shift after mask */
+    int32_t  offset; /* added after shift */
+};
+
+enum { OP_NONE = 0, OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE };
+
+struct term {
+    struct sample a;
+    uint8_t  b_is_const;
+    struct sample b;
+    int32_t  c;
+    uint8_t  op;
+};
+
+enum { ACT_NONE = 0, ACT_SWITCH, ACT_RESET, ACT_SET_LATCH };
+enum { FLAG_NEED_LATCH = 1 };
+
+struct rule {
+    uint8_t  act;
+    uint8_t  flags;
+    uint16_t stable_frames;
+    double   wait_s;
+    struct term terms[12];
+};
+
+struct rw { uint16_t addr; uint8_t value; };
+
+struct baked {
+    const unsigned char *data;
+    unsigned long len;
+    const char *label;
+};
+
+struct challenge {
+    const char *slug;        /* game group (labeling) */
+    const char *name;        /* human label */
+    const char *rom;         /* disk ROM, used when no baked ROM is present */
+    const char *state;       /* disk savestate, used when no baked state is */
+    double      weight;      /* base selection weight */
+    int         interlude;   /* forced every INTERLUDE_INTERVAL_S seconds */
+    const struct baked *baked_rom;
+    const struct baked *baked_state;
+    int         n_writes;
+    const struct rw  *writes; /* per-frame RAM writes (interlude force-spawn) */
+    const struct rule *rules; /* ACT_NONE-terminated */
+};
+
+/* Sample constructors (field order: addr, size, be, sgn, prev, mask, shift,
+ * offset). P = prev-frame shadow, S = signed, M = mask/shift, BE = big-endian. */
+#define R8(a)         { (a), 1, 0, 0, 0, 0x00FF, 0, 0 }
+#define R8P(a)        { (a), 1, 0, 0, 1, 0x00FF, 0, 0 }
+#define R8S(a)        { (a), 1, 0, 1, 0, 0x00FF, 0, 0 }
+#define R8PO(a, o)    { (a), 1, 0, 0, 1, 0x00FF, 0, (o) }
+#define R8M(a, m, s)  { (a), 1, 0, 0, 0, (m), (s), 0 }
+#define R8MP(a, m, s) { (a), 1, 0, 0, 1, (m), (s), 0 }
+#define R16(a)        { (a), 2, 0, 0, 0, 0xFFFF, 0, 0 }
+#define R16BE(a)      { (a), 2, 1, 0, 0, 0xFFFF, 0, 0 }
+#define R16BES(a)     { (a), 2, 1, 1, 0, 0xFFFF, 0, 0 }
+#define R16BEP(a)     { (a), 2, 1, 0, 1, 0xFFFF, 0, 0 }
+#define R16BEPS(a)    { (a), 2, 1, 1, 1, 0xFFFF, 0, 0 }
+
+/* term constructors: a OP const / a OP sample-b.
+ * Parameter names must NOT collide with the field designators (.a, .op, .b)
+ * or the designators would be substituted too. The sample args expand to
+ * brace-enclosed initializer lists, which cannot be parenthesized. */
+#define A(sa, s_op, sv) { .a = sa, .b_is_const = 1, .c = (int32_t)(sv), .op = (s_op) }
+#define B(sa, s_op, sb) { .a = sa, .b_is_const = 0, .b = sb, .op = (s_op) }
+
+/* Rule constructors; the terms list terminates at the first zero op. */
+#define SW(wait, ...) { .act = ACT_SWITCH, .wait_s = (double)(wait), .terms = { __VA_ARGS__ } }
+#define RS(wait, ...) { .act = ACT_RESET,  .wait_s = (double)(wait), .terms = { __VA_ARGS__ } }
+#define LATCH(...)    { .act = ACT_SET_LATCH, .terms = { __VA_ARGS__ } }
+
+/* Baked resources, wired to the challenge table in main(). */
+static struct baked res_rom;
+static struct baked res_state_boss;
+static struct baked res_state_level;
+static struct baked res_state_castle;
+
+/* --- Rule sets ------------------------------------------------------------ */
+
+/* ALinkToThePast.lua: exit-dungeon reset, then death / mini-boss music. */
+static const struct rule alttp_rules[] = {
+    RS(0.2,  A(R8(0x005E), OP_EQ, 2)),
+    SW(1.1,  A(R16(0x0132), OP_EQ, 61712)),
+    SW(1.6,  A(R16(0x0132), OP_EQ, 6416)),
+    { .act = ACT_NONE },
+};
+
+/* Castlevania.lua: edge on the trigger byte, edge on the death byte. */
+static const struct rule castlevania_rules[] = {
+    SW(1.0,  A(R8P(0x0018), OP_NE, 8), A(R8(0x0018), OP_EQ, 8)),
+    SW(1.6,  A(R8P(0x0045), OP_NE, 0), A(R8(0x0045), OP_EQ, 0)),
+    { .act = ACT_NONE },
+};
+
+/* DonkeyKongCountry.lua: all three states share the game-state edge and the
+ * lives check; the barrel adds the x-position check, the boss the HP check. */
+static const struct rule dkc_rules_barrel[] = {
+    SW(0.5,    A(R16(0x00BE), OP_GT, 4800)),
+    SW(0.016,  A(R8P(0x0040), OP_NE, 12), A(R8(0x0040), OP_EQ, 12)),
+    SW(0.8,    B(R8P(0x0575), OP_GT, R8(0x0575))),
+    { .act = ACT_NONE },
+};
+static const struct rule dkc_rules_level1[] = {
+    SW(0.016,  A(R8P(0x0040), OP_NE, 12), A(R8(0x0040), OP_EQ, 12)),
+    SW(0.8,    B(R8P(0x0575), OP_GT, R8(0x0575))),
+    { .act = ACT_NONE },
+};
+static const struct rule dkc_rules_boss1[] = {
+    SW(2.6,    A(R8(0x1503), OP_EQ, 0)),
+    SW(0.016,  A(R8P(0x0040), OP_NE, 12), A(R8(0x0040), OP_EQ, 12)),
+    SW(0.8,    B(R8P(0x0575), OP_GT, R8(0x0575))),
+    { .act = ACT_NONE },
+};
+
+/* Earthbound.lua: OR of two immediate-switch conditions, then flee. */
+static const struct rule earthbound_rules[] = {
+    SW(0,    A(R8(0x9A15), OP_EQ, 0)),
+    SW(0,    A(R8(0x1085), OP_EQ, 148)),
+    SW(3.8,  A(R8(0xA22D), OP_EQ, 0)),
+    { .act = ACT_NONE },
+};
+
+/* Gradius.lua: win, then game-over (immediate). */
+static const struct rule gradius_rules[] = {
+    SW(1.6,  A(R8(0x0100), OP_EQ, 2)),
+    SW(0,    A(R8(0x001C), OP_EQ, 147)),
+    { .act = ACT_NONE },
+};
+
+/* Kirby.lua: score must beat previous score + 100; check 255 = done. */
+static const struct rule kirby_rules_miniboss[] = {
+    SW(0.8,    B(R8(0x0593), OP_GE, R8PO(0x0593, 100))),
+    SW(0.8,    A(R8(0x0597), OP_EQ, 255)),
+    { .act = ACT_NONE },
+};
+static const struct rule kirby_rules_level1[] = {
+    SW(0.016,  A(R8P(0x058E), OP_NE, 32), A(R8(0x058E), OP_EQ, 32)),
+    SW(0.8,    A(R8(0x0597), OP_EQ, 255)),
+    { .act = ACT_NONE },
+};
+
+/* LinksAwakening.lua: player HP or enemy HP hits zero. */
+static const struct rule linksawakening_rules[] = {
+    SW(2.87,  A(R8(0x0364), OP_EQ, 0)),
+    SW(1.6,   A(R8(0x1B5A), OP_EQ, 0)),
+    { .act = ACT_NONE },
+};
+
+/* Mario1.lua: three fail conditions (OR), then the level-clear check. */
+static const struct rule mario1_rules_castle[] = {
+    SW(2.78,   A(R8(0x000E), OP_EQ, 11)),
+    SW(2.78,   A(R8(0x0712), OP_EQ, 1)),
+    SW(2.78,   A(R8(0x07F8), OP_EQ, 0), A(R8(0x07F9), OP_EQ, 0), A(R8(0x07FA), OP_EQ, 0)),
+    SW(0.016,  A(R8(0x0016), OP_EQ, 0), A(R8(0x0017), OP_EQ, 0),
+               A(R8(0x0018), OP_EQ, 0), A(R8(0x0019), OP_EQ, 0), A(R8(0x001A), OP_EQ, 0)),
+    { .act = ACT_NONE },
+};
+static const struct rule mario1_rules_1_1[] = {
+    SW(2.78,   A(R8(0x000E), OP_EQ, 11)),
+    SW(2.78,   A(R8(0x0712), OP_EQ, 1)),
+    SW(2.78,   A(R8(0x07F8), OP_EQ, 0), A(R8(0x07F9), OP_EQ, 0), A(R8(0x07FA), OP_EQ, 0)),
+    SW(0.8,    A(R8(0x000E), OP_EQ, 4)),
+    { .act = ACT_NONE },
+};
+
+/* Mario3.lua: all three states share the death-fanfare edge. */
+static const struct rule mario3_rules_miniboss[] = {
+    SW(0.75,   A(R8P(0x05F3), OP_NE, 1), A(R8(0x05F3), OP_EQ, 1)),
+    SW(0.75,   A(R8P(0x04F4), OP_NE, 1), A(R8(0x04F4), OP_EQ, 1)),
+    { .act = ACT_NONE },
+};
+static const struct rule mario3_rules_ceiling[] = {
+    SW(0.016,  A(R8P(0x0075), OP_NE, 7), A(R8(0x0075), OP_EQ, 7)),
+    SW(0.8,    A(R8P(0x04F4), OP_NE, 1), A(R8(0x04F4), OP_EQ, 1)),
+    { .act = ACT_NONE },
+};
+static const struct rule mario3_rules_hammer[] = {
+    SW(1.6,    A(R8(0x05F3), OP_EQ, 2)),
+    SW(0.016,  A(R8P(0x0075), OP_NE, 7), A(R8(0x0075), OP_EQ, 7)),
+    SW(0.8,    A(R8P(0x04F4), OP_NE, 1), A(R8(0x04F4), OP_EQ, 1)),
+    { .act = ACT_NONE },
+};
+
+/* MarioWorld.lua: the three states formerly hard-wired as the phase machine.
+ * level1/castle key on the magic flag; the boss additionally on the boss id. */
+static const struct rule marioworld_rules_level1[] = {
+    SW(1.2,    A(R16(0x0DDA), OP_EQ, 255)),
+    { .act = ACT_NONE },
+};
+static const struct rule marioworld_rules_castle[] = {
+    SW(1.2,    A(R16(0x0DDA), OP_EQ, 255)),
+    SW(0.016,  A(R16(0x0DDA), OP_EQ, 5)),
+    { .act = ACT_NONE },
+};
+static const struct rule marioworld_rules_boss[] = {
+    SW(1.2,    A(R16(0x0DDA), OP_EQ, 255)),
+    SW(1.2,    A(R16(0x0A54), OP_EQ, 1)),
+    { .act = ACT_NONE },
+};
+
+/* MarioWorldInterlude.lua: force the spawn byte every frame, then win on the
+ * interlude flag or the magic door. */
+static const struct rw interlude_writes[] = {
+    { 0x0F30, 128 },
+};
+static const struct rule marioworld_interlude_rules[] = {
+    SW(0.8,    A(R16(0x13D2), OP_EQ, 1)),
+    SW(1.2,    A(R16(0x0DDA), OP_EQ, 255)),
+    { .act = ACT_NONE },
+};
+
+/* Megaman.lua: one rule set shared by all three states. The camera must
+ * settle (fire on the 4th consecutive matching frame), then the hp edge and
+ * the ten all-zero enemy checks. */
+static const struct rule megaman_rules[] = {
+    { .act = ACT_SWITCH, .wait_s = 0.016, .stable_frames = 3,
+      .terms = { A(R8(0x001C), OP_EQ, 2) } },
+    SW(0.8,    A(R8P(0x006A), OP_GT, 0), A(R8(0x006A), OP_EQ, 0)),
+    SW(0.8,    A(R8(0x00E0), OP_EQ, 0), A(R8(0x01FA), OP_EQ, 0),
+               A(R8(0x0500), OP_EQ, 0), A(R8(0x0501), OP_EQ, 0),
+               A(R8(0x051F), OP_EQ, 0), A(R8(0x0520), OP_EQ, 0),
+               A(R8(0x053E), OP_EQ, 0), A(R8(0x053F), OP_EQ, 0),
+               A(R8(0x055D), OP_EQ, 0), A(R8(0x055E), OP_EQ, 0)),
+    { .act = ACT_NONE },
+};
+
+/* MetroidClassic.lua (NES layout in that file) vs Metroid.lua (SNES). */
+static const struct rule metroid_classic_rules[] = {
+    SW(1.0,    A(R8(0x0106), OP_EQ, 0), A(R8(0x0107), OP_EQ, 0)),
+    SW(0.8,    A(R8(0x0056), OP_NE, 0)),
+    { .act = ACT_NONE },
+};
+static const struct rule metroid_rules[] = {
+    SW(1.6,    A(R16(0x0998), OP_EQ, 32)),
+    SW(1.6,    A(R16(0x0998), OP_EQ, 35)),
+    { .act = ACT_NONE },
+};
+
+/* Pokemon.lua: once a pokemon joins the team, switch. */
+static const struct rule pokemon_rules[] = {
+    SW(0.016,  A(R8(0x1163), OP_GE, 1)),
+    { .act = ACT_NONE },
+};
+
+/* RiverCityRansom.lua: death, then screen transition. */
+static const struct rule rivercityransom_rules[] = {
+    SW(0.8,    A(R8(0x04BF), OP_EQ, 0)),
+    SW(0.3,    A(R8(0x0042), OP_EQ, 1)),
+    { .act = ACT_NONE },
+};
+
+/* Sonic.lua: signed big-endian 16-bit lives and score-bonus; the boss state
+ * adds the boss HP byte check first. */
+static const struct rule sonic_rules_level1[] = {
+    SW(0.016,  B(R16BEP(0xFE12), OP_GT, R16BES(0xFE12))),
+    SW(0.016,  A(R16BES(0xF7D2), OP_GT, 0)),
+    { .act = ACT_NONE },
+};
+static const struct rule sonic_rules_boss[] = {
+    SW(3.0,    A(R8S(0xD921), OP_EQ, 0)),
+    SW(0.016,  B(R16BEP(0xFE12), OP_GT, R16BES(0xFE12))),
+    SW(0.016,  A(R16BES(0xF7D2), OP_GT, 0)),
+    { .act = ACT_NONE },
+};
+
+/* Starfox.lua: player HP zero, then stage-1 victory code. */
+static const struct rule starfox_rules[] = {
+    SW(1.8,    A(R8(0x0396), OP_EQ, 0)),
+    SW(3.2,    A(R16(0x14AC), OP_EQ, 31)),
+    { .act = ACT_NONE },
+};
+
+/* StreetFighter.lua: one rule set shared by both states (stage 7 + a timer
+ * counter expired). */
+static const struct rule streetfighter_rules[] = {
+    SW(1.6,    A(R16(0x00E0), OP_EQ, 7), A(R16(0x0636), OP_LE, 0)),
+    SW(1.6,    A(R16(0x00E0), OP_EQ, 7), A(R16(0x0836), OP_LE, 0)),
+    { .act = ACT_NONE },
+};
+
+/* StreetsofRage2.lua: three fail conditions (OR), the boss-spawn latch, then
+ * the latch-gated victory rule (boss HP + enemy lives both expired). */
+static const struct rule sor2_rules[] = {
+    SW(1.0,    A(R16BEPS(0xEFA8), OP_LE, 0)),
+    SW(1.0,    A(R16BEPS(0xEFA8), OP_GT, 300)),
+    SW(1.0,    A(R16BE(0xFC3C), OP_LE, 0)),
+    LATCH(A(R16BE(0xF182), OP_GT, 0)),
+    { .act = ACT_SWITCH, .flags = FLAG_NEED_LATCH, .wait_s = 1.6,
+      .terms = { A(R16BE(0xF180), OP_LE, 0), A(R16BE(0xF182), OP_LE, 0) } },
+    { .act = ACT_NONE },
+};
+
+/* SuperBomberman.lua: level cleared, then victory (immediate). */
+static const struct rule super_bomberman_rules[] = {
+    SW(1.6,    A(R8(0x2804), OP_NE, 0)),
+    SW(0,      A(R8(0x0D7D), OP_EQ, 4)),
+    { .act = ACT_NONE },
+};
+
+/* Tetris.lua: level-4 edge, then the OR-latched game-end (prev==0, cur>0). */
+static const struct rule tetris_rules[] = {
+    SW(1.07,   A(R8P(0x0048), OP_NE, 4), A(R8(0x0048), OP_EQ, 4)),
+    SW(1.07,   A(R8P(0x0058), OP_EQ, 0), A(R8(0x0058), OP_GT, 0)),
+    { .act = ACT_NONE },
+};
+
+/* Zelda1.lua: take-this flag edge (switch) or room-change reset; the boss
+ * state keys on hearts (low/high nibble), heart container, and room 69. */
+static const struct rule zelda1_rules_take_this[] = {
+    SW(1.0,    A(R8P(0x0657), OP_EQ, 0), A(R8(0x0657), OP_NE, 0)),
+    RS(0,      A(R8P(0x0006), OP_EQ, 0), A(R8(0x0006), OP_NE, 0)),
+    { .act = ACT_NONE },
+};
+static const struct rule zelda1_rules_boss[] = {
+    SW(0.8,    A(R8MP(0x066F, 0x0F, 0), OP_GT, 0), A(R8M(0x066F, 0x0F, 0), OP_EQ, 0), A(R8(0x0670), OP_EQ, 0)),
+    SW(0.8,    A(R8P(0x0670), OP_GT, 0), A(R8M(0x066F, 0x0F, 0), OP_EQ, 0), A(R8(0x0670), OP_EQ, 0)),
+    SW(0.5,    B(R8MP(0x066F, 0xF0, 4), OP_LT, R8M(0x066F, 0xF0, 4))),
+    RS(0,      A(R8P(0x00EB), OP_NE, 69), A(R8(0x00EB), OP_EQ, 69)),
+    { .act = ACT_NONE },
+};
+
+/* --- Challenge table: the port of the ../challenges Lua handlers ----------- */
+
+static const struct challenge challenges[] = {
+    {
+        "alttp_cell", "A Link to the Past - mini boss",
+        "game_data/ROMS/Legend of Zelda, The - A Link to the Past (USA).zip",
+        "game_data/states/A Link to the Past - mini boss.State",
+        1.0, 0, NULL, NULL, 0, NULL, alttp_rules,
+    },
+    {
+        "castlevania", "Castlevania - level 1",
+        "game_data/ROMS/Castlevania (USA) (Rev A).zip",
+        "game_data/states/Castlevania - level 1.State",
+        1.0, 0, NULL, NULL, 0, NULL, castlevania_rules,
+    },
+    {
+        "donkeykong", "Donkey Kong Country - level 1",
+        "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).zip",
+        "game_data/states/Donkey Kong Country - level 1.State",
+        1.0, 0, NULL, NULL, 0, NULL, dkc_rules_level1,
+    },
+    {
+        "donkeykong", "Donkey Kong Country - barrel level",
+        "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).zip",
+        "game_data/states/Donkey Kong Country - barrel level.State",
+        1.0, 0, NULL, NULL, 0, NULL, dkc_rules_barrel,
+    },
+    {
+        "donkeykong", "Donkey Kong Country - boss 1",
+        "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).zip",
+        "game_data/states/Donkey Kong Country - boss 1.State",
+        1.0, 0, NULL, NULL, 0, NULL, dkc_rules_boss1,
+    },
+    {
+        "earthbound", "EarthBound - battle",
+        "game_data/ROMS/EarthBound (USA).zip",
+        "game_data/states/EarthBound - battle.State",
+        1.0, 0, NULL, NULL, 0, NULL, earthbound_rules,
+    },
+    {
+        "gradius", "Gradius - boss",
+        "game_data/ROMS/Gradius (USA).zip",
+        "game_data/states/Gradius - boss.State",
+        1.0, 0, NULL, NULL, 0, NULL, gradius_rules,
+    },
+    {
+        "kirby", "Kirby's Adventure - mini boss",
+        "game_data/ROMS/Kirby's Adventure (USA) (Rev A).zip",
+        "game_data/states/Kirby's Adventure - mini boss.State",
+        1.0, 0, NULL, NULL, 0, NULL, kirby_rules_miniboss,
+    },
+    {
+        "kirby", "Kirby's Adventure - level 1 (until door)",
+        "game_data/ROMS/Kirby's Adventure (USA) (Rev A).zip",
+        "game_data/states/Kirby's Adventure - level 1 (until door).State",
+        1.0, 0, NULL, NULL, 0, NULL, kirby_rules_level1,
+    },
+    {
+        "awakening_boss", "Link's Awakening - mini boss",
+        "game_data/ROMS/Legend of Zelda, The - Link's Awakening DX (USA, Europe) (SGB Enhanced).zip",
+        "game_data/states/Link's Awakening - mini boss.State",
+        1.0, 0, NULL, NULL, 0, NULL, linksawakening_rules,
+    },
+    {
+        "mario1", "Super Mario Bros - castle",
+        "game_data/ROMS/Super Mario Bros. (Japan, USA).zip",
+        "game_data/states/Super Mario Bros - castle.State",
+        0.5, 0, NULL, NULL, 0, NULL, mario1_rules_castle,
+    },
+    {
+        "mario1", "Super Mario Bros - 1-1",
+        "game_data/ROMS/Super Mario Bros. (Japan, USA).zip",
+        "game_data/states/Super Mario Bros - 1-1.State",
+        0.5, 0, NULL, NULL, 0, NULL, mario1_rules_1_1,
+    },
+    {
+        "mario3", "Super Mario Bros. 3 - first mini boss",
+        "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip",
+        "game_data/states/Super Mario Bros. 3 - first mini boss.State",
+        0.5, 0, NULL, NULL, 0, NULL, mario3_rules_miniboss,
+    },
+    {
+        
+    },
+    {
+        "mario3", "Super Mario Bros. 3 - crushing ceiling",
+        "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip",
+        "game_data/states/Super Mario Bros. 3 - crushing ceiling.State",
+        0.5, 0, NULL, NULL, 0, NULL, mario3_rules_ceiling,
+    },
+    {
+        "mario3", "Super Mario Bros. 3 - hammer bro",
+        "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip",
+        "game_data/states/Super Mario Bros. 3 - hammer bro.State",
+        0.5, 0, NULL, NULL, 0, NULL, mario3_rules_hammer,
+    },
+    {
+        "marioworld", "Super Mario World - level 1",
+        "game_data/ROMS/Super Mario World (USA).zip",
+        "game_data/states/Super Mario World - level 1.State",
+        0.5, 0, &res_rom, &res_state_level, 0, NULL, marioworld_rules_level1,
+    },
+    {
+        "marioworld", "Super Mario World - castle level",
+        "game_data/ROMS/Super Mario World (USA).zip",
+        "game_data/states/Super Mario World - castle level.State",
+        0.5, 0, &res_rom, &res_state_castle, 0, NULL, marioworld_rules_castle,
+    },
+    {
+        "marioworld", "Super Mario World - first boss",
+        "game_data/ROMS/Super Mario World (USA).zip",
+        "game_data/states/Super Mario World - first boss.State",
+        0.5, 0, &res_rom, &res_state_boss, 0, NULL, marioworld_rules_boss,
+    },
+    {
+        "marioworldinterlude", "Super Mario World - interlude",
+        "game_data/ROMS/Super Mario World (USA).zip",
+        "game_data/states/Super Mario World - interlude.State",
+        1.0, 1, &res_rom, NULL, 1, interlude_writes, marioworld_interlude_rules,
+    },
+    {
+        "megaman", "Mega Man - bomb man",
+        "game_data/ROMS/Mega Man (USA).zip",
+        "game_data/states/Mega Man - bomb man.State",
+        1.0, 0, NULL, NULL, 0, NULL, megaman_rules,
+    },
+    {
+        "megaman", "Mega Man - fire man",
+        "game_data/ROMS/Mega Man (USA).zip",
+        "game_data/states/Mega Man - fire man.State",
+        1.0, 0, NULL, NULL, 0, NULL, megaman_rules,
+    },
+    {
+        "megaman", "Mega Man - cut man",
+        "game_data/ROMS/Mega Man (USA).zip",
+        "game_data/states/Mega Man - cut man.State",
+        1.0, 0, NULL, NULL, 0, NULL, megaman_rules,
+    },
+    {
+        "metroid_classic", "Metroid - level 1",
+        "game_data/ROMS/Metroid (USA).zip",
+        "game_data/states/Metroid - level 1.State",
+        1.0, 0, NULL, NULL, 0, NULL, metroid_classic_rules,
+    },
+    {
+        "supermetroid_escape", "Super Metroid - First Escape",
+        "game_data/ROMS/Super Metroid (Japan, USA) (En,Ja).zip",
+        "game_data/states/Super Metroid - First Escape.State",
+        1.0, 0, NULL, NULL, 0, NULL, metroid_rules,
+    },
+    {
+        "pokemon", "Pokemon Red - choose pokemon",
+        "game_data/ROMS/Pokemon - Red Version (USA, Europe) (SGB Enhanced).zip",
+        "game_data/states/Pokemon Red - choose pokemon.State",
+        1.0, 0, NULL, NULL, 0, NULL, pokemon_rules,
+    },
+    {
+        "rivercityransom", "River City Ransom - level 1",
+        "game_data/ROMS/River City Ransom (USA).zip",
+        "game_data/states/River City Ransom - level 1.State",
+        1.0, 0, NULL, NULL, 0, NULL, rivercityransom_rules,
+    },
+    {
+        "sonic", "Sonic The Hedgehog - level 1",
+        "game_data/ROMS/Sonic The Hedgehog (USA, Europe).zip",
+        "game_data/states/Sonic The Hedgehog - level 1.State",
+        1.0, 0, NULL, NULL, 0, NULL, sonic_rules_level1,
+    },
+    {
+        "sonic", "Sonic The Hedgehog - boss 1",
+        "game_data/ROMS/Sonic The Hedgehog (USA, Europe).zip",
+        "game_data/states/Sonic The Hedgehog - boss 1.State",
+        1.0, 0, NULL, NULL, 0, NULL, sonic_rules_boss,
+    },
+    {
+        "starfox", "Star Fox - boss",
+        "game_data/ROMS/Star Fox (USA).zip",
+        "game_data/states/Star Fox - boss.State",
+        1.0, 0, NULL, NULL, 0, NULL, starfox_rules,
+    },
+    {
+        "sf2", "Street Fighter II Turbo - blanka vs dhalsim",
+        "game_data/ROMS/Street Fighter II Turbo (USA) (Rev 1).zip",
+        "game_data/states/Street Fighter II Turbo - blanka vs dhalsim.State",
+        1.0, 0, NULL, NULL, 0, NULL, streetfighter_rules,
+    },
+    {
+        "sf2", "Street Fighter II Turbo - ryu vs guile",
+        "game_data/ROMS/Street Fighter II Turbo (USA) (Rev 1).zip",
+        "game_data/states/Street Fighter II Turbo - ryu vs guile.State",
+        1.0, 0, NULL, NULL, 0, NULL, streetfighter_rules,
+    },
+    {
+        "streetsofrage2", "Streets of Rage 2 - mini boss 1",
+        "game_data/ROMS/Streets of Rage 2 (USA).zip",
+        "game_data/states/Streets of Rage 2 - mini boss 1.State",
+        1.0, 0, NULL, NULL, 0, NULL, sor2_rules,
+    },
+    {
+        "superbomberman", "Super Bomberman - level 1",
+        "game_data/ROMS/Super Bomberman (USA).zip",
+        "game_data/states/Super Bomberman - level 1.State",
+        1.0, 0, NULL, NULL, 0, NULL, super_bomberman_rules,
+    },
+    {
+        "tetris", "Tetris",
+        "game_data/ROMS/Tetris (USA).zip",
+        "game_data/states/Tetris.State",
+        1.0, 0, NULL, NULL, 0, NULL, tetris_rules,
+    },
+    {
+        "zelda1", "Legend of Zelda - take this",
+        "game_data/ROMS/Legend of Zelda, The (USA) (Rev 1).zip",
+        "game_data/states/Legend of Zelda - take this.State",
+        1.0, 0, NULL, NULL, 0, NULL, zelda1_rules_take_this,
+    },
+    {
+        "zelda1", "Legend of Zelda - boss 1",
+        "game_data/ROMS/Legend of Zelda, The (USA) (Rev 1).zip",
+        "game_data/states/Legend of Zelda - boss 1.State",
+        1.0, 0, NULL, NULL, 0, NULL, zelda1_rules_boss,
+    },
+};
+
+#define N_CHALLENGES ((int)(sizeof(challenges) / sizeof(challenges[0])))
+/* --- Runner state ---------------------------------------------------------- */
+
+#define MAX_SHADOWS 48
+#define MAX_RULES   64
+#define PLAYED_PENALTY   0.01
+/* From Game.lua: `interval = 180  -- 5 seconds` (the code wins). */
+#define INTERLUDE_INTERVAL_S 180.0
+
+struct shadow { uint16_t addr; uint8_t size; int32_t val; int valid; };
+
+static int         g_cur = 0;
+static int         g_avail[N_CHALLENGES];
+static double      g_dynw[N_CHALLENGES];
+static char        g_cur_rom[4096] = "";
+static char       *g_rom_tmp = NULL;
+static char       *g_state_tmp = NULL;
+static int         g_pending_switch = 0, g_pending_reset = 0;
+static uint64_t    g_switch_at = 0, g_reset_at = 0;
+static unsigned    g_switch_ms = 0, g_reset_ms = 0;
+static int         g_latch = 0;
+static int         g_force_switch = 0;   /* T key */
+static uint64_t    g_last_interlude = 0;
+static uint16_t    g_stable[MAX_RULES];
+static struct shadow g_shadow[MAX_SHADOWS];
+static int         g_nshadow = 0;
+
+/* Cached system RAM, refreshed once per evaluation. */
+static uint8_t *g_ram = NULL;
+static size_t   g_ram_sz = 0;
+
+static char *spool_to_temp(const unsigned char *data, unsigned long len,
+                           const char *pattern);
+
+static void ram_refresh(void) {
+    g_ram = g_retro.retro_get_memory_data
+         ? g_retro.retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM) : NULL;
+    g_ram_sz = (g_ram && g_retro.retro_get_memory_size)
+            ? g_retro.retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM) : 0;
+}
+
+/* Raw value of a sample (masked/shifted, no offset). *ok = 0 when the RAM
+ * region is unavailable or out of bounds. */
+static int32_t read_raw(const struct sample *s, int *ok) {
+    *ok = 0;
+    if (!g_ram)
+        return 0;
+    if ((size_t)s->addr + s->size > g_ram_sz)
+        return 0;
+    /* Mask the raw (unsigned) bits first, THEN sign-extend: a signed read
+     * with a full-width mask (the only combination the handlers use) must
+     * yield -1 for 0xFF / 0xFFFF, which sign-then-mask would destroy. */
+    uint32_t raw;
+    if (s->size == 1)
+        raw = g_ram[s->addr];
+    else
+        raw = s->be
+            ? ((uint32_t)g_ram[s->addr] << 8) | g_ram[s->addr + 1]
+            : (uint32_t)g_ram[s->addr] | ((uint32_t)g_ram[s->addr + 1] << 8);
+    raw &= (uint32_t)s->mask;
+    int32_t v;
+    if (s->sgn)
+        v = (s->size == 1) ? (int32_t)(int8_t)(raw & 0xFF)
+                           : (int32_t)(int16_t)(raw & 0xFFFF);
+    else
+        v = (int32_t)raw;
+    if (s->shift)
+        v >>= s->shift;
+    *ok = 1;
+    return v;
+}
+
+/* Full value of a sample: shadow lookup for prev, else live read; offset
+ * applied last (so a prev sample's offset composes, as in Kirby's
+ * `prev_score + 100`). */
+static int32_t sample_value(const struct sample *s, int *ok) {
+    int32_t v;
+    if (s->prev) {
+        for (int i = 0; i < g_nshadow; i++) {
+            if (g_shadow[i].addr == s->addr && g_shadow[i].size == s->size) {
+                *ok = g_shadow[i].valid;
+                v = g_shadow[i].valid ? g_shadow[i].val + s->offset : 0;
+                return v;
+            }
+        }
+        *ok = 0;
+        return 0;
+    }
+    v = read_raw(s, ok);
+    if (!*ok)
+        return 0;
+    return v + s->offset;
+}
+
+static int term_eval(const struct term *t) {
+    int32_t va, vb;
+    int oka, okb;
+    va = sample_value(&t->a, &oka);
+    if (t->b_is_const) {
+        vb = t->c;
+        okb = 1;
+    } else {
+        vb = sample_value(&t->b, &okb);
+    }
+    if (!oka || !okb)
+        return 0;
+    switch (t->op) {
+    case OP_EQ: return va == vb;
+    case OP_NE: return va != vb;
+    case OP_LT: return va < vb;
+    case OP_LE: return va <= vb;
+    case OP_GT: return va > vb;
+    case OP_GE: return va >= vb;
+    default:    return 0;
+    }
+}
+
+static int rule_match(const struct rule *r, int ri) {
+    for (int t = 0; t < 12; t++) {
+        const struct term *term = &r->terms[t];
+        if (term->op == OP_NONE)
+            break;
+        if (!term_eval(term)) {
+            if (r->stable_frames)
+                g_stable[ri] = 0;
+            return 0;
+        }
+    }
+    if (r->stable_frames) {
+        /* Lua: the counter increments on each match and fires when > N,
+         * i.e. on frame N+1. g_stable reaches N after frame N. */
+        if (g_stable[ri] < r->stable_frames) {
+            g_stable[ri]++;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Collect the prev-shadow slots a challenge needs (mirrors the
+ * `state.prev_* = state.prev_* or current` initialization). */
+static void collect_shadows(const struct challenge *c) {
+    g_nshadow = 0;
+    for (int ri = 0; ri < MAX_RULES && c->rules[ri].act != ACT_NONE; ri++) {
+        for (int t = 0; t < 12; t++) {
+            const struct term *term = &c->rules[ri].terms[t];
+            if (term->op == OP_NONE)
+                break;
+            const struct sample *candidates[2] = {
+                &term->a, term->b_is_const ? NULL : &term->b
+            };
+            for (int k = 0; k < 2; k++) {
+                const struct sample *s = candidates[k];
+                if (!s || !s->prev)
+                    continue;
+                int found = 0;
+                for (int i = 0; i < g_nshadow; i++)
+                    if (g_shadow[i].addr == s->addr && g_shadow[i].size == s->size) {
+                        found = 1;
+                        break;
+                    }
+                if (!found && g_nshadow < MAX_SHADOWS) {
+                    g_shadow[g_nshadow].addr = s->addr;
+                    g_shadow[g_nshadow].size = s->size;
+                    g_shadow[g_nshadow].val = 0;
+                    g_shadow[g_nshadow].valid = 0;
+                    g_nshadow++;
+                }
+            }
+        }
+    }
+}
+
+static void refresh_shadows(void) {
+    for (int i = 0; i < g_nshadow; i++) {
+        struct sample s = { g_shadow[i].addr, g_shadow[i].size,
+                            0, 0, 0, 0xFFFF, 0, 0 };
+        int ok;
+        g_shadow[i].val = read_raw(&s, &ok);
+        g_shadow[i].valid = 1;
+    }
+}
+
+/* Evaluate the current challenge's rules once (one emulated frame's worth).
+ * Mirrors the Lua handler-call contract:
+ *   - SWITCH matches stop evaluation and, if no switch is pending, schedule
+ *     one; they clear the latch and skip the shadow update (the handler
+ *     returned before its trailing `state.x = current` lines ran).
+ *   - RESET matches schedule/refresh a reset and let evaluation continue.
+ *   - SET_LATCH matches set the latch and continue.
+ */
+static int eval_challenge(void) {
+    const struct challenge *c = &challenges[g_cur];
+    ram_refresh();
+
+    for (int i = 0; i < c->n_writes; i++) {
+        const struct rw *w = &c->writes[i];
+        if (g_ram && (size_t)w->addr < g_ram_sz)
+            g_ram[w->addr] = w->value;
+    }
+
+    int switch_matched = 0;
+    for (int ri = 0; ri < MAX_RULES && c->rules[ri].act != ACT_NONE; ri++) {
+        const struct rule *r = &c->rules[ri];
+        if ((r->flags & FLAG_NEED_LATCH) && !g_latch)
+            continue;
+        if (!rule_match(r, ri))
+            continue;
+        switch (r->act) {
+        case ACT_SET_LATCH:
+            g_latch = 1;
+            break;
+        case ACT_RESET:
+            g_pending_reset = 1;
+            g_reset_at = SDL_GetTicks64();
+            g_reset_ms = (unsigned)(r->wait_s * 1000.0 + 0.5);
+            printf("[engine] %s: reset scheduled in %.3fs\n",
+                   c->name, r->wait_s);
+            break;
+        case ACT_SWITCH:
+            switch_matched = 1;
+            if (!g_pending_switch) {
+                g_pending_switch = 1;
+                g_switch_at = SDL_GetTicks64();
+                g_switch_ms = (unsigned)(r->wait_s * 1000.0 + 0.5);
+                printf("[engine] %s: done - switching in %.3fs\n",
+                       c->name, r->wait_s);
+            }
+            goto done;
+        default:
+            break;
+        }
+    }
+done:
+    if (switch_matched)
+        g_latch = 0;
+    if (!switch_matched)
+        refresh_shadows();
+    return switch_matched;
+}
+
+/* --- Selection (port of Game.lua's weight policy) -------------------------- */
+
+static int file_exists(const char *p) {
+    if (!p)
+        return 0;
+    FILE *f = fopen(p, "rb");
+    if (f) {
+        fclose(f);
+        return 1;
+    }
+    return 0;
+}
+
+static void compute_availability(void) {
+    int n_avail = 0;
+    for (int i = 0; i < N_CHALLENGES; i++) {
+        const struct challenge *c = &challenges[i];
+        int rom_ok = (c->baked_rom && c->baked_rom->len) || file_exists(c->rom);
+        int st_ok  = (c->baked_state && c->baked_state->len) || file_exists(c->state);
+        g_avail[i] = rom_ok && st_ok;
+        g_dynw[i] = c->weight > 0.0 ? c->weight : 1.0;
+        if (g_avail[i])
+            n_avail++;
+        printf("  %c [%s] %s%s\n", g_avail[i] ? ' ' : 'x',
+               c->slug, c->name, c->interlude ? "  (interlude)" : "");
+    }
+    printf("  (%d/%d challenges available)\n", n_avail, N_CHALLENGES);
+}
+
+/* Per-switch recovery: w = min(orig, w + orig / N). */
+static void weights_update(void) {
+    double recovery = 1.0 / N_CHALLENGES;
+    for (int i = 0; i < N_CHALLENGES; i++) {
+        if (!g_avail[i])
+            continue;
+        double w = g_dynw[i] + challenges[i].weight * recovery;
+        g_dynw[i] = w > challenges[i].weight ? challenges[i].weight : w;
+    }
+}
+
+/* The just-finished challenge drops to orig * penalty. */
+static void weights_reduce(int cur) {
+    g_dynw[cur] = challenges[cur].weight * PLAYED_PENALTY;
+}
+
+static int select_next(int current) {
+    uint64_t now = SDL_GetTicks64();
+
+    /* Forced interlude (excluded from the random pool). */
+    for (int i = 0; i < N_CHALLENGES; i++) {
+        if (!g_avail[i] || !challenges[i].interlude)
+            continue;
+        if (now - g_last_interlude >= (uint64_t)(INTERLUDE_INTERVAL_S * 1000.0))
+            return i;
+        break;
+    }
+
+    int n_pool = 0;
+    for (int i = 0; i < N_CHALLENGES; i++)
+        if (g_avail[i] && !challenges[i].interlude)
+            n_pool++;
+    if (n_pool == 0)
+        return -1;
+
+    int next = current;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        double total = 0;
+        for (int i = 0; i < N_CHALLENGES; i++)
+            if (g_avail[i] && !challenges[i].interlude)
+                total += g_dynw[i];
+        if (total <= 0.0)
+            return -1;
+        double pick = (double)rand() / (double)RAND_MAX * total;
+        double cum = 0.0;
+        next = current;
+        for (int i = 0; i < N_CHALLENGES; i++) {
+            if (!g_avail[i] || challenges[i].interlude)
+                continue;
+            cum += g_dynw[i];
+            if (pick <= cum) {
+                next = i;
+                break;
+            }
+        }
+        if (next != current)
+            break;
+    }
+    if (next == current) {
+        /* The weighted draw kept landing on the current challenge; fall
+         * back to the next available non-interlude challenge so a switch
+         * always changes something. */
+        for (int k = 1; k <= N_CHALLENGES; k++) {
+            int i = (current + k) % N_CHALLENGES;
+            if (g_avail[i] && !challenges[i].interlude) {
+                next = i;
+                break;
+            }
+        }
+    }
+    return next;
+}
+
+/* Load challenge i: ROM (swap if different), state, scratch state. Returns 0
+ * on failure so the caller can drop the challenge and retry. */
+static int load_challenge(int i) {
+    const struct challenge *c = &challenges[i];
+
+    const char *rom;
+    if (c->baked_rom && c->baked_rom->len) {
+        char *tmp = spool_to_temp(c->baked_rom->data, c->baked_rom->len,
+                                  "sdlarch_rom_XXXXXX");
+        if (!tmp)
+            return 0;
+        free(g_rom_tmp);
+        g_rom_tmp = tmp;
+        rom = tmp;
+    } else {
+        rom = c->rom;
+    }
+
+    int rom_same = g_game_loaded && rom[0] && strcmp(rom, g_cur_rom) == 0;
+    if (rom_same) {
+        printf("Same ROM, skipping reload\n");
+    } else {
+        if (g_game_loaded) {
+            g_retro.retro_unload_game();
+            g_game_loaded = false;
+        }
+        if (!core_load_game(rom)) {
+            fprintf(stderr, "[engine] cannot load ROM for %s: %s\n",
+                    c->slug, rom);
+            return 0;
+        }
+        snprintf(g_cur_rom, sizeof(g_cur_rom), "%s", rom);
+        g_retro.retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+        printf("[engine] ROM loaded: %s\n", rom);
+    }
+
+    const char *st;
+    if (c->baked_state && c->baked_state->len) {
+        char *tmp = spool_to_temp(c->baked_state->data, c->baked_state->len,
+                                  "sdlarch_state_XXXXXX");
+        if (!tmp)
+            return 0;
+        free(g_state_tmp);
+        g_state_tmp = tmp;
+        st = tmp;
+    } else {
+        st = c->state;
+    }
+    core_load_state(st);
+
+    g_cur = i;
+    g_latch = 0;
+    memset(g_stable, 0, sizeof(g_stable));
+    g_pending_reset = 0;
+    collect_shadows(c);
+    ram_refresh();
+    refresh_shadows();
+
+    printf("[engine] challenge: %s (%s) weight=%.2f%s\n",
+           c->name, c->slug, c->weight, c->interlude ? " interlude" : "");
+    return 1;
+}
+
+/* Reload the current challenge's state (ACT_RESET). Also clears the
+ * per-challenge scratch, as Lua's `reset()` clears the whole state table. */
+static void reload_current_state(void) {
+    const struct challenge *c = &challenges[g_cur];
+    const char *st = (c->baked_state && c->baked_state->len) ? g_state_tmp
+                                                             : c->state;
+    if (!st)
+        return;
+    core_load_state(st);
+    g_latch = 0;
+    memset(g_stable, 0, sizeof(g_stable));
+    ram_refresh();
+    refresh_shadows();
+}
+
+static void do_switch(void) {
+    g_pending_switch = 0;
+    const struct challenge *c = &challenges[g_cur];
+    if (c->interlude)
+        g_last_interlude = SDL_GetTicks64();
+    weights_update();
+    if (!c->interlude)
+        weights_reduce(g_cur);
+
+    for (int attempt = 0; attempt < N_CHALLENGES; attempt++) {
+        int next = select_next(g_cur);
+        if (next < 0)
+            break;
+        if (load_challenge(next))
+            return;
+        g_avail[next] = 0;
+        g_dynw[next] = 0.0;
+    }
+    fprintf(stderr, "[engine] no challenge left to load\n");
+}
+
+/* Match a CLI rom/state pair against the challenge table by basename, so
+ * absolute and relative paths both work. Returns the index, or -1. */
+static int match_challenge(const char *rom, const char *state) {
+    const char *rb = rom && rom[0] ? (strrchr(rom, '/') ? strrchr(rom, '/') + 1 : rom) : NULL;
+    const char *sb = state && state[0] ? (strrchr(state, '/') ? strrchr(state, '/') + 1 : state) : NULL;
+    if (sb) {
+        for (int i = 0; i < N_CHALLENGES; i++) {
+            if (!challenges[i].state)
+                continue;
+            const char *n = strrchr(challenges[i].state, '/');
+            if (strcmp(n ? n + 1 : challenges[i].state, sb) == 0)
+                return i;
+        }
+    }
+    if (rb) {
+        for (int i = 0; i < N_CHALLENGES; i++) {
+            if (!challenges[i].rom)
+                continue;
+            const char *n = strrchr(challenges[i].rom, '/');
+            if (strcmp(n ? n + 1 : challenges[i].rom, rb) == 0)
+                return i;
+        }
+    }
+    return -1;
+}
+
+/* Write an embedded buffer out to a fresh temporary file and return its path
+ * (caller must free). Lets the baked ROM/savestate be fed to the core through
+ * the normal file-based load path. Returns NULL on failure. */
+static char *spool_to_temp(const unsigned char *data, unsigned long len,
+                           const char *pattern) {
+    if (!data || !len)
+        return NULL;
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !*tmp)
+        tmp = "/tmp";
+    char tmpl[4096];
+    snprintf(tmpl, sizeof(tmpl), "%s/%s", tmp, pattern);
+    int fd = mkstemp(tmpl);
+    if (fd < 0)
+        return NULL;
+    unsigned long off = 0;
+    while (off < len) {
+        ssize_t w = write(fd, data + off, len - off);
+        if (w <= 0) {
+            close(fd);
+            unlink(tmpl);
+            return NULL;
+        }
+        off += (unsigned long)w;
+    }
+    close(fd);
+    return strdup(tmpl);
 }
 
 static void noop() {}
 
 int main(int argc, char *argv[]) {
-	if (argc < 2)
-		die("usage: %s <core> [game] [state]", argv[0]);
+    const char *core_path = argc > 1 ? argv[1] : "snes9x_libretro.dylib";
+    /* Optional CLI overrides: pick the first challenge by ROM or state name
+     * (basename match). The challenge engine takes over from there. */
+    const char *cli_rom = argc > 2 ? argv[2] : NULL;
+    const char *cli_state = argc > 3 ? argv[3] : NULL;
+
+    /* Unbuffered stdout: the app is also a headless challenge harness, and
+     * buffered engine logs would be lost if the process is killed. */
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS) < 0)
         die("Failed to initialize SDL");
@@ -1007,17 +2237,31 @@ int main(int argc, char *argv[]) {
     g_video.hw.context_destroy = noop;
 
     // Load the core.
-    core_load(argv[1]);
+    core_load(core_path);
 
-    if (!g_retro.supports_no_game && argc < 3)
-        die("This core requires a game in order to run");
+    /* Wire the baked payloads into the challenge table (Super Mario World). */
+    res_rom          = (struct baked){ baked_rom,    baked_rom_len,    "baked ROM" };
+    res_state_boss   = (struct baked){ baked_state,  baked_state_len,  "baked state (boss)" };
+    res_state_level  = (struct baked){ baked_level1, baked_level1_len, "baked state (level 1)" };
+    res_state_castle = (struct baked){ baked_castle, baked_castle_len, "baked state (castle)" };
 
-    // Load the game.
-    core_load_game(argc > 2 ? argv[2] : NULL);
-    core_load_state(argc > 3 ? argv[3] : NULL);
+    /* Start the challenge cycle: pick the first challenge (CLI override if
+     * given, otherwise weighted-random) and load its ROM + savestate. */
+    printf("Available challenges:\n");
+    compute_availability();
 
-    // Configure the player input devices.
-    g_retro.retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+    int start = match_challenge(cli_rom, cli_state);
+    if (start < 0)
+        start = select_next(0);
+    if (start < 0)
+        die("no challenge is loadable: no ROM/state on disk and none baked");
+    if (!load_challenge(start))
+        die("failed to load first challenge: %s", challenges[start].name);
+
+    printf("Controls: F9 save state | T force switch | ESC quit\n");
+    printf("The engine picks the next challenge at random (weighted); the\n");
+    printf("Super Mario World interlude is forced every %.0fs.\n\n",
+           INTERLUDE_INTERVAL_S);
 
     SDL_Event ev;
 
@@ -1041,6 +2285,14 @@ int main(int argc, char *argv[]) {
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
             case SDL_QUIT: running = false; break;
+            case SDL_KEYDOWN:
+                if (!ev.key.repeat && ev.key.keysym.scancode == SDL_SCANCODE_F9)
+                    save_state_to_disk();
+                if (!ev.key.repeat && ev.key.keysym.scancode == SDL_SCANCODE_T) {
+                    g_force_switch = 1;
+                    printf("[engine] force switch requested (T)\n");
+                }
+                break;
             case SDL_WINDOWEVENT:
                 switch (ev.window.event) {
                 case SDL_WINDOWEVENT_CLOSE: running = false; break;
@@ -1052,8 +2304,8 @@ int main(int argc, char *argv[]) {
         }
 
         // Frame-rate limiter: cap to the core's nominal fps so the game runs at
-        // real speed. Without this, sdlarch runs hundreds of fps and a state whose
-        // scene is short-lived (e.g. a boss fight) is over in ~1s of wall-clock.
+        // real speed. Without this, sdlarch runs hundreds of fps and a loaded
+        // state whose scene is short-lived (e.g. a boss fight) is over in ~1s.
         {
             uint64_t now = SDL_GetTicks64();
             if (g_last_frame && g_fps > 0.0) {
@@ -1063,6 +2315,31 @@ int main(int argc, char *argv[]) {
             }
             g_last_frame = SDL_GetTicks64();
         }
+
+        // Challenge engine: run the current challenge's rule set each frame.
+        // A SWITCH match stops the rule set for the rest of the frame (the
+        // Lua handlers' `return` does); RESET / SET_LATCH matches continue.
+        (void)eval_challenge();
+
+        // Pending switch/reset: wait out the handler-specified delay while the
+        // game keeps running, then load the next challenge / the state again.
+        if (g_pending_switch || g_pending_reset) {
+            if (g_force_switch) {
+                g_pending_reset = 0;
+                do_switch();
+            } else {
+                uint64_t now = SDL_GetTicks64();
+                int switch_due = g_pending_switch &&
+                                 (now - g_switch_at) >= (uint64_t)g_switch_ms;
+                int reset_due  = g_pending_reset &&
+                                 (now - g_reset_at) >= (uint64_t)g_reset_ms;
+                if (switch_due)
+                    do_switch();
+                else if (reset_due)
+                    reload_current_state();
+            }
+        }
+
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		g_retro.retro_run();
 	}
@@ -1079,6 +2356,8 @@ int main(int argc, char *argv[]) {
         free(g_vars);
     }
 
+    free(g_rom_tmp);
+    free(g_state_tmp);
     SDL_Quit();
 
     return EXIT_SUCCESS;

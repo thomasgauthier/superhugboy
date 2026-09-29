@@ -8,6 +8,8 @@ static SDL_GLContext *g_ctx = NULL;
 static SDL_AudioDeviceID g_pcm = 0;
 static struct retro_frame_time_callback runloop_frame_time;
 static retro_usec_t runloop_frame_time_last = 0;
+static double g_fps = 60.0;
+static uint64_t g_last_frame = 0;
 static const uint8_t *g_kbd = NULL;
 static struct retro_audio_callback audio_callback;
 
@@ -85,9 +87,9 @@ static struct {
 	void (*retro_set_controller_port_device)(unsigned port, unsigned device);
 	void (*retro_reset)(void);
 	void (*retro_run)(void);
-//	size_t retro_serialize_size(void);
-//	bool retro_serialize(void *data, size_t size);
-//	bool retro_unserialize(const void *data, size_t size);
+	size_t (*retro_serialize_size)(void);
+	bool (*retro_serialize)(void *data, size_t size);
+	bool (*retro_unserialize)(const void *data, size_t size);
 //	void retro_cheat_reset(void);
 //	void retro_cheat_set(unsigned index, bool enabled, const char *code);
 	bool (*retro_load_game)(const struct retro_game_info *game);
@@ -883,6 +885,8 @@ static void core_load(const char *sofile) {
 	load_retro_sym(retro_run);
 	load_retro_sym(retro_load_game);
 	load_retro_sym(retro_unload_game);
+	load_retro_sym(retro_serialize_size);
+	load_retro_sym(retro_unserialize);
 
 	load_sym(set_environment, retro_set_environment);
 	load_sym(set_video_refresh, retro_set_video_refresh);
@@ -947,7 +951,7 @@ static void core_load_game(const char *filename) {
 		die("The core failed to load the content.");
 
 	g_retro.retro_get_system_av_info(&av);
-
+	g_fps = av.timing.fps;
 	video_configure(&av.geometry);
 	audio_init(av.timing.sample_rate);
 
@@ -958,6 +962,25 @@ static void core_load_game(const char *filename) {
     char window_title[255];
     snprintf(window_title, sizeof(window_title), "sdlarch %s %s", system.library_name, system.library_version);
     SDL_SetWindowTitle(g_win, window_title);
+}
+
+static void core_load_state(const char *filename) {
+	if (!filename || !g_retro.retro_unserialize)
+		return;
+	SDL_RWops *file = SDL_RWFromFile(filename, "rb");
+	if (!file)
+		die("Failed to open state %s: %s", filename, SDL_GetError());
+	Sint64 size = SDL_RWsize(file);
+	if (size < 0)
+		die("Failed to query state file size: %s", SDL_GetError());
+	void *data = SDL_malloc(size);
+	if (!SDL_RWread(file, data, size, 1))
+		die("Failed to read state file: %s", SDL_GetError());
+	SDL_RWclose(file);
+	if (!g_retro.retro_unserialize(data, size))
+		die("Failed to load state %s", filename);
+	SDL_free(data);
+	puts("State loaded");
 }
 
 static void core_unload() {
@@ -972,7 +995,7 @@ static void noop() {}
 
 int main(int argc, char *argv[]) {
 	if (argc < 2)
-		die("usage: %s <core> [game]", argv[0]);
+		die("usage: %s <core> [game] [state]", argv[0]);
 
     if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS) < 0)
         die("Failed to initialize SDL");
@@ -991,6 +1014,7 @@ int main(int argc, char *argv[]) {
 
     // Load the game.
     core_load_game(argc > 2 ? argv[2] : NULL);
+    core_load_state(argc > 3 ? argv[3] : NULL);
 
     // Configure the player input devices.
     g_retro.retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
@@ -1027,6 +1051,18 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        // Frame-rate limiter: cap to the core's nominal fps so the game runs at
+        // real speed. Without this, sdlarch runs hundreds of fps and a state whose
+        // scene is short-lived (e.g. a boss fight) is over in ~1s of wall-clock.
+        {
+            uint64_t now = SDL_GetTicks64();
+            if (g_last_frame && g_fps > 0.0) {
+                uint64_t target = (uint64_t)(1000.0 / g_fps);
+                uint64_t elapsed = now - g_last_frame;
+                if (elapsed < target) SDL_Delay((Uint32)(target - elapsed));
+            }
+            g_last_frame = SDL_GetTicks64();
+        }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		g_retro.retro_run();
 	}

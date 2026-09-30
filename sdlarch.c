@@ -2371,8 +2371,9 @@ int main(int argc, char *argv[]) {
 
         // Pending switch/reset: wait out the handler-specified delay while the
         // game keeps running, then load the next challenge / the state again.
-        if (g_pending_switch || g_pending_reset) {
+        if (g_force_switch || g_pending_switch || g_pending_reset) {
             if (g_force_switch) {
+                g_force_switch = 0;
                 g_pending_reset = 0;
                 do_switch();
             } else {

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -584,12 +585,19 @@ static void video_deinit() {
 }
 
 
+static int g_pcm_rate = 0;
+
 static void audio_init(int frequency) {
-    /* Re-entrant: keep the existing device across ROM swaps. */
-    if (g_pcm) {
+    /* Re-entrant: keep the device across ROM and core swaps, reopening only when
+     * the rate changes. */
+    if (g_pcm && g_pcm_rate == frequency) {
         if (audio_callback.set_state)
             audio_callback.set_state(true);
         return;
+    }
+    if (g_pcm) {
+        SDL_CloseAudioDevice(g_pcm);
+        g_pcm = 0;
     }
 
     SDL_AudioSpec desired;
@@ -604,8 +612,14 @@ static void audio_init(int frequency) {
     desired.samples = 4096;
 
     g_pcm = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained, 0);
-    if (!g_pcm)
-        die("Failed to open playback device: %s", SDL_GetError());
+    if (!g_pcm) {
+        /* Headless host with no sound card: run silent rather than refusing to run. */
+        fprintf(stderr, "[engine] audio disabled: %s\n", SDL_GetError());
+        if (audio_callback.set_state)
+            audio_callback.set_state(true);
+        return;
+    }
+    g_pcm_rate = frequency;
 
     SDL_PauseAudioDevice(g_pcm, 0);
 
@@ -617,11 +631,13 @@ static void audio_init(int frequency) {
 
 
 static void audio_deinit() {
-    SDL_CloseAudioDevice(g_pcm);
+    if (g_pcm)
+        SDL_CloseAudioDevice(g_pcm);
 }
 
 static size_t audio_write(const int16_t *buf, unsigned frames) {
-    SDL_QueueAudio(g_pcm, buf, sizeof(*buf) * frames * 2);
+    if (g_pcm)
+        SDL_QueueAudio(g_pcm, buf, sizeof(*buf) * frames * 2);
     return frames;
 }
 
@@ -1707,6 +1723,8 @@ static int         g_cur = 0;
 static int         g_avail[N_CHALLENGES];
 static double      g_dynw[N_CHALLENGES];
 static char        g_cur_rom[4096] = "";
+static char        g_cur_core[4096] = "";
+static void        noop(void);
 static int         g_pending_switch = 0, g_pending_reset = 0;
 static uint64_t    g_switch_at = 0, g_reset_at = 0;
 static unsigned    g_switch_ms = 0, g_reset_ms = 0;
@@ -1978,14 +1996,58 @@ static int file_exists(const char *p) {
     return 0;
 }
 
+/* ---------------------------------------------------------------------------
+ * Cores. A challenge's state file names the core that produced it, and that is
+ * the core its system needs, so the core is a property of the challenge - not
+ * of the invocation. Each core is looked up beside the executable and in the
+ * data root above it, exactly like game_data/.
+ * ------------------------------------------------------------------------ */
+struct core_map { const char *suffix; const char *files[3]; };
+static const struct core_map g_cores[] = {
+    { ".s9x",                     { "snes9x_libretro.so", "snes9x_libretro_v12.so", NULL } },
+    { ".libretro-quicknes.state", { "quicknes_libretro.so", NULL, NULL } },
+    { ".libretro-gambatte.state", { "gambatte_libretro.so", NULL, NULL } },
+    { ".libretro-gpgx.state",     { "genesis_plus_gx_libretro.so", NULL, NULL } },
+    { NULL, { NULL, NULL, NULL } }
+};
+
+/* Core for a challenge state path, or NULL when the system has no core present.
+ * `buf` must outlive the returned pointer. */
+static const char *core_for_state(const char *state, char *buf, size_t bufsz) {
+    if (!state || !state[0] || !g_exe_dir[0])
+        return NULL;
+    const struct core_map *m = NULL;
+    size_t nl = strlen(state);
+    for (int i = 0; g_cores[i].suffix; i++) {
+        size_t sl = strlen(g_cores[i].suffix);
+        if (nl >= sl && strcmp(state + nl - sl, g_cores[i].suffix) == 0) { m = &g_cores[i]; break; }
+    }
+    if (!m)
+        return NULL;
+    char up[4096];
+    snprintf(up, sizeof(up), "%s", g_exe_dir);
+    char *slash = strrchr(up, '/');
+    if (slash && slash != up) *slash = '\0';
+    for (int d = 0; d < 2; d++) {
+        const char *dir = d ? up : g_exe_dir;
+        for (int f = 0; m->files[f]; f++) {
+            snprintf(buf, bufsz, "%s/%s", dir, m->files[f]);
+            if (file_exists(buf))
+                return buf;
+        }
+    }
+    return NULL;
+}
+
 static void compute_availability(void) {
     int n_avail = 0;
     for (int i = 0; i < N_CHALLENGES; i++) {
         const struct challenge *c = &challenges[i];
-        char rombuf[4096], stbuf[4096];
-        int rom_ok = file_exists(data_path(c->rom, rombuf, sizeof(rombuf)));
-        int st_ok  = file_exists(data_path(c->state, stbuf, sizeof(stbuf)));
-        g_avail[i] = rom_ok && st_ok;
+        char rombuf[4096], stbuf[4096], corebuf[4096];
+        int rom_ok  = file_exists(data_path(c->rom, rombuf, sizeof(rombuf)));
+        int st_ok   = file_exists(data_path(c->state, stbuf, sizeof(stbuf)));
+        int core_ok = core_for_state(stbuf, corebuf, sizeof(corebuf)) != NULL;
+        g_avail[i] = rom_ok && st_ok && core_ok;
         g_dynw[i] = c->weight > 0.0 ? c->weight : 1.0;
         if (g_avail[i])
             n_avail++;
@@ -2073,8 +2135,34 @@ static int select_next(int current) {
 static int load_challenge(int i) {
     const struct challenge *c = &challenges[i];
 
-    char rombuf[4096];
+    char rombuf[4096], stbuf0[4096], corebuf[4096];
     const char *rom = data_path(c->rom, rombuf, sizeof(rombuf));
+    const char *statep = data_path(c->state, stbuf0, sizeof(stbuf0));
+
+    /* The challenge's state names its core; swap cores when the system changes. */
+    const char *core = core_for_state(statep, corebuf, sizeof(corebuf));
+    if (!core) {
+        fprintf(stderr, "[engine] no core present for %s (%s)\n", c->name, c->state);
+        return 0;
+    }
+    if (!g_cur_core[0] || strcmp(g_cur_core, core) != 0) {
+        if (g_cur_core[0]) {
+            core_unload();
+            g_game_loaded = 0;
+            g_cur_rom[0] = '\0';
+        }
+        core_load(core);
+        printf("[engine] core: %s\n", core);
+        snprintf(g_cur_core, sizeof(g_cur_core), "%s", core);
+        /* A new core must not inherit the previous one's hw-render request: its
+         * callbacks point into the object we just unloaded. */
+        memset(&g_video.hw, 0, sizeof(g_video.hw));
+        g_video.hw.version_major = 4;
+        g_video.hw.version_minor = 5;
+        g_video.hw.context_type = RETRO_HW_CONTEXT_OPENGL_CORE;
+        g_video.hw.context_reset = noop;
+        g_video.hw.context_destroy = noop;
+    }
 
     int rom_same = g_game_loaded && rom[0] && strcmp(rom, g_cur_rom) == 0;
     if (rom_same) {
@@ -2094,9 +2182,7 @@ static int load_challenge(int i) {
         printf("[engine] ROM loaded: %s\n", rom);
     }
 
-    char stbuf[4096];
-    const char *st = data_path(c->state, stbuf, sizeof(stbuf));
-    core_load_state(st);
+    core_load_state(statep);
 
     g_cur = i;
     g_latch = 0;
@@ -2147,26 +2233,35 @@ static void do_switch(void) {
     fprintf(stderr, "[engine] no challenge left to load\n");
 }
 
-/* Match a CLI rom/state pair against the challenge table by basename, so
- * absolute and relative paths both work. Returns the index, or -1. */
-static int match_challenge(const char *rom, const char *state) {
-    const char *rb = rom && rom[0] ? (strrchr(rom, '/') ? strrchr(rom, '/') + 1 : rom) : NULL;
-    const char *sb = state && state[0] ? (strrchr(state, '/') ? strrchr(state, '/') + 1 : state) : NULL;
-    if (sb) {
+/* Case-insensitive substring test. */
+static int ci_contains(const char *hay, const char *needle) {
+    size_t nl = strlen(needle);
+    if (!nl)
+        return 1;
+    for (const char *p = hay; *p; p++)
+        if (strncasecmp(p, needle, nl) == 0)
+            return 1;
+    return 0;
+}
+
+/* Pick the challenge named on the command line: exact name first, then a
+ * case-insensitive substring of the name, then the slug. -1 if nothing matches. */
+static int match_challenge(const char *want) {
+    if (!want || !want[0])
+        return -1;
+    size_t wl = strlen(want);
+    for (int pass = 0; pass < 3; pass++) {
         for (int i = 0; i < N_CHALLENGES; i++) {
-            if (!challenges[i].state)
-                continue;
-            const char *n = strrchr(challenges[i].state, '/');
-            if (strcmp(n ? n + 1 : challenges[i].state, sb) == 0)
-                return i;
-        }
-    }
-    if (rb) {
-        for (int i = 0; i < N_CHALLENGES; i++) {
-            if (!challenges[i].rom)
-                continue;
-            const char *n = strrchr(challenges[i].rom, '/');
-            if (strcmp(n ? n + 1 : challenges[i].rom, rb) == 0)
+            const char *n = challenges[i].name;
+            const char *s = challenges[i].slug;
+            int hit = 0;
+            if (pass == 0)
+                hit = n && strlen(n) == wl && strncasecmp(n, want, wl) == 0;
+            else if (pass == 1)
+                hit = n && ci_contains(n, want);
+            else
+                hit = s && strcasecmp(s, want) == 0;
+            if (hit)
                 return i;
         }
     }
@@ -2176,11 +2271,9 @@ static int match_challenge(const char *rom, const char *state) {
 static void noop() {}
 
 int main(int argc, char *argv[]) {
-    const char *core_path = argc > 1 ? argv[1] : "snes9x_libretro.dylib";
-    /* Optional CLI overrides: pick the first challenge by ROM or state name
-     * (basename match). The challenge engine takes over from there. */
-    const char *cli_rom = argc > 2 ? argv[2] : NULL;
-    const char *cli_state = argc > 3 ? argv[3] : NULL;
+    /* Optional single argument: the challenge to start with (name or slug, case
+     * insensitive). Cores are chosen per challenge, so no core is passed here. */
+    const char *want = argc > 1 ? argv[1] : NULL;
 
     /* Unbuffered stdout: the app is also a headless challenge harness, and
      * buffered engine logs would be lost if the process is killed. */
@@ -2198,19 +2291,18 @@ int main(int argc, char *argv[]) {
     g_video.hw.context_reset   = noop;
     g_video.hw.context_destroy = noop;
 
-    // Load the core.
-    core_load(core_path);
-
-    /* Start the challenge cycle: pick the first challenge (CLI override if
-     * given, otherwise weighted-random) and load its ROM + savestate. */
+    /* Start the challenge cycle: the one named on the command line, otherwise a
+     * weighted-random pick; load its core, ROM and savestate. */
     printf("Available challenges:\n");
     compute_availability();
 
-    int start = match_challenge(cli_rom, cli_state);
+    int start = match_challenge(want);
+    if (want && start < 0)
+        die("no challenge matches '%s'", want);
     if (start < 0)
         start = select_next(0);
     if (start < 0)
-        die("no challenge is loadable: no ROM/state on disk");
+        die("no challenge is loadable: no ROM/state/core present");
     if (!load_challenge(start))
         die("failed to load first challenge: %s", challenges[start].name);
 

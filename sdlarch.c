@@ -4,19 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 #include "libretro.h"
 #include "glad.h"
-
-/* Baked game payload (build/baked_rom.c, build/baked_state.c), compiled into
- * the binary by the Makefile. Used when no ROM/savestate is passed on the CLI. */
-extern unsigned char baked_rom[];
-extern unsigned int  baked_rom_len;
-extern unsigned char baked_state[];
-extern unsigned int  baked_state_len;
-extern unsigned char baked_level1[];
-extern unsigned int  baked_level1_len;
-extern unsigned char baked_castle[];
-extern unsigned int  baked_castle_len;
 
 static SDL_Window *g_win = NULL;
 static SDL_GLContext *g_ctx = NULL;
@@ -1197,21 +1189,13 @@ struct rule {
 
 struct rw { uint16_t addr; uint8_t value; };
 
-struct baked {
-    const unsigned char *data;
-    unsigned long len;
-    const char *label;
-};
-
 struct challenge {
     const char *slug;        /* game group (labeling) */
     const char *name;        /* human label */
-    const char *rom;         /* disk ROM, used when no baked ROM is present */
-    const char *state;       /* disk savestate, used when no baked state is */
+    const char *rom;         /* game ROM on disk, relative to the cwd */
+    const char *state;       /* savestate on disk, relative to the cwd */
     double      weight;      /* base selection weight */
     int         interlude;   /* forced every INTERLUDE_INTERVAL_S seconds */
-    const struct baked *baked_rom;
-    const struct baked *baked_state;
     int         n_writes;
     const struct rw  *writes; /* per-frame RAM writes (interlude force-spawn) */
     const struct rule *rules; /* ACT_NONE-terminated */
@@ -1242,12 +1226,6 @@ struct challenge {
 #define SW(wait, ...) { .act = ACT_SWITCH, .wait_s = (double)(wait), .terms = { __VA_ARGS__ } }
 #define RS(wait, ...) { .act = ACT_RESET,  .wait_s = (double)(wait), .terms = { __VA_ARGS__ } }
 #define LATCH(...)    { .act = ACT_SET_LATCH, .terms = { __VA_ARGS__ } }
-
-/* Baked resources, wired to the challenge table in main(). */
-static struct baked res_rom;
-static struct baked res_state_boss;
-static struct baked res_state_level;
-static struct baked res_state_castle;
 
 /* --- Rule sets ------------------------------------------------------------ */
 
@@ -1500,220 +1478,217 @@ static const struct challenge challenges[] = {
         "alttp_cell", "A Link to the Past - mini boss",
         "game_data/ROMS/Legend of Zelda, The - A Link to the Past (USA).zip",
         "game_data/states/A Link to the Past - mini boss.State",
-        1.0, 0, NULL, NULL, 0, NULL, alttp_rules,
+        1.0, 0, 0, NULL, alttp_rules,
     },
     {
         "castlevania", "Castlevania - level 1",
         "game_data/ROMS/Castlevania (USA) (Rev A).zip",
         "game_data/states/Castlevania - level 1.State",
-        1.0, 0, NULL, NULL, 0, NULL, castlevania_rules,
+        1.0, 0, 0, NULL, castlevania_rules,
     },
     {
         "donkeykong", "Donkey Kong Country - level 1",
-        "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).zip",
-        "game_data/states/Donkey Kong Country - level 1.State",
-        1.0, 0, NULL, NULL, 0, NULL, dkc_rules_level1,
+        "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).sfc",
+        "game_data/converted/Donkey Kong Country - level 1.s9x",
+        1.0, 0, 0, NULL, dkc_rules_level1,
     },
     {
         "donkeykong", "Donkey Kong Country - barrel level",
-        "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).zip",
-        "game_data/states/Donkey Kong Country - barrel level.State",
-        1.0, 0, NULL, NULL, 0, NULL, dkc_rules_barrel,
+        "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).sfc",
+        "game_data/converted/Donkey Kong Country - barrel level.s9x",
+        1.0, 0, 0, NULL, dkc_rules_barrel,
     },
     {
         "donkeykong", "Donkey Kong Country - boss 1",
-        "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).zip",
-        "game_data/states/Donkey Kong Country - boss 1.State",
-        1.0, 0, NULL, NULL, 0, NULL, dkc_rules_boss1,
+        "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).sfc",
+        "game_data/converted/Donkey Kong Country - boss 1.s9x",
+        1.0, 0, 0, NULL, dkc_rules_boss1,
     },
     {
         "earthbound", "EarthBound - battle",
         "game_data/ROMS/EarthBound (USA).zip",
         "game_data/states/EarthBound - battle.State",
-        1.0, 0, NULL, NULL, 0, NULL, earthbound_rules,
+        1.0, 0, 0, NULL, earthbound_rules,
     },
     {
         "gradius", "Gradius - boss",
         "game_data/ROMS/Gradius (USA).zip",
         "game_data/states/Gradius - boss.State",
-        1.0, 0, NULL, NULL, 0, NULL, gradius_rules,
+        1.0, 0, 0, NULL, gradius_rules,
     },
     {
         "kirby", "Kirby's Adventure - mini boss",
         "game_data/ROMS/Kirby's Adventure (USA) (Rev A).zip",
         "game_data/states/Kirby's Adventure - mini boss.State",
-        1.0, 0, NULL, NULL, 0, NULL, kirby_rules_miniboss,
+        1.0, 0, 0, NULL, kirby_rules_miniboss,
     },
     {
         "kirby", "Kirby's Adventure - level 1 (until door)",
         "game_data/ROMS/Kirby's Adventure (USA) (Rev A).zip",
         "game_data/states/Kirby's Adventure - level 1 (until door).State",
-        1.0, 0, NULL, NULL, 0, NULL, kirby_rules_level1,
+        1.0, 0, 0, NULL, kirby_rules_level1,
     },
     {
         "awakening_boss", "Link's Awakening - mini boss",
         "game_data/ROMS/Legend of Zelda, The - Link's Awakening DX (USA, Europe) (SGB Enhanced).zip",
         "game_data/states/Link's Awakening - mini boss.State",
-        1.0, 0, NULL, NULL, 0, NULL, linksawakening_rules,
+        1.0, 0, 0, NULL, linksawakening_rules,
     },
     {
         "mario1", "Super Mario Bros - castle",
         "game_data/ROMS/Super Mario Bros. (Japan, USA).zip",
         "game_data/states/Super Mario Bros - castle.State",
-        0.5, 0, NULL, NULL, 0, NULL, mario1_rules_castle,
+        0.5, 0, 0, NULL, mario1_rules_castle,
     },
     {
         "mario1", "Super Mario Bros - 1-1",
         "game_data/ROMS/Super Mario Bros. (Japan, USA).zip",
         "game_data/states/Super Mario Bros - 1-1.State",
-        0.5, 0, NULL, NULL, 0, NULL, mario1_rules_1_1,
+        0.5, 0, 0, NULL, mario1_rules_1_1,
     },
     {
         "mario3", "Super Mario Bros. 3 - first mini boss",
         "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip",
         "game_data/states/Super Mario Bros. 3 - first mini boss.State",
-        0.5, 0, NULL, NULL, 0, NULL, mario3_rules_miniboss,
-    },
-    {
-        
+        0.5, 0, 0, NULL, mario3_rules_miniboss,
     },
     {
         "mario3", "Super Mario Bros. 3 - crushing ceiling",
         "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip",
         "game_data/states/Super Mario Bros. 3 - crushing ceiling.State",
-        0.5, 0, NULL, NULL, 0, NULL, mario3_rules_ceiling,
+        0.5, 0, 0, NULL, mario3_rules_ceiling,
     },
     {
         "mario3", "Super Mario Bros. 3 - hammer bro",
         "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).zip",
         "game_data/states/Super Mario Bros. 3 - hammer bro.State",
-        0.5, 0, NULL, NULL, 0, NULL, mario3_rules_hammer,
+        0.5, 0, 0, NULL, mario3_rules_hammer,
     },
     {
         "marioworld", "Super Mario World - level 1",
-        "game_data/ROMS/Super Mario World (USA).zip",
-        "game_data/states/Super Mario World - level 1.State",
-        0.5, 0, &res_rom, &res_state_level, 0, NULL, marioworld_rules_level1,
+        "game_data/ROMS/Super Mario World (USA).sfc",
+        "game_data/converted/Super Mario World - level 1.s9x",
+        0.5, 0, 0, NULL, marioworld_rules_level1,
     },
     {
         "marioworld", "Super Mario World - castle level",
-        "game_data/ROMS/Super Mario World (USA).zip",
-        "game_data/states/Super Mario World - castle level.State",
-        0.5, 0, &res_rom, &res_state_castle, 0, NULL, marioworld_rules_castle,
+        "game_data/ROMS/Super Mario World (USA).sfc",
+        "game_data/converted/Super Mario World - castle level.s9x",
+        0.5, 0, 0, NULL, marioworld_rules_castle,
     },
     {
         "marioworld", "Super Mario World - first boss",
-        "game_data/ROMS/Super Mario World (USA).zip",
-        "game_data/states/Super Mario World - first boss.State",
-        0.5, 0, &res_rom, &res_state_boss, 0, NULL, marioworld_rules_boss,
+        "game_data/ROMS/Super Mario World (USA).sfc",
+        "game_data/converted/Super Mario World - first boss.s9x",
+        0.5, 0, 0, NULL, marioworld_rules_boss,
     },
     {
         "marioworldinterlude", "Super Mario World - interlude",
-        "game_data/ROMS/Super Mario World (USA).zip",
-        "game_data/states/Super Mario World - interlude.State",
-        1.0, 1, &res_rom, NULL, 1, interlude_writes, marioworld_interlude_rules,
+        "game_data/ROMS/Super Mario World (USA).sfc",
+        "game_data/converted/Super Mario World - interlude.s9x",
+        1.0, 1, 1, interlude_writes, marioworld_interlude_rules,
     },
     {
         "megaman", "Mega Man - bomb man",
         "game_data/ROMS/Mega Man (USA).zip",
         "game_data/states/Mega Man - bomb man.State",
-        1.0, 0, NULL, NULL, 0, NULL, megaman_rules,
+        1.0, 0, 0, NULL, megaman_rules,
     },
     {
         "megaman", "Mega Man - fire man",
         "game_data/ROMS/Mega Man (USA).zip",
         "game_data/states/Mega Man - fire man.State",
-        1.0, 0, NULL, NULL, 0, NULL, megaman_rules,
+        1.0, 0, 0, NULL, megaman_rules,
     },
     {
         "megaman", "Mega Man - cut man",
         "game_data/ROMS/Mega Man (USA).zip",
         "game_data/states/Mega Man - cut man.State",
-        1.0, 0, NULL, NULL, 0, NULL, megaman_rules,
+        1.0, 0, 0, NULL, megaman_rules,
     },
     {
         "metroid_classic", "Metroid - level 1",
         "game_data/ROMS/Metroid (USA).zip",
         "game_data/states/Metroid - level 1.State",
-        1.0, 0, NULL, NULL, 0, NULL, metroid_classic_rules,
+        1.0, 0, 0, NULL, metroid_classic_rules,
     },
     {
         "supermetroid_escape", "Super Metroid - First Escape",
-        "game_data/ROMS/Super Metroid (Japan, USA) (En,Ja).zip",
-        "game_data/states/Super Metroid - First Escape.State",
-        1.0, 0, NULL, NULL, 0, NULL, metroid_rules,
+        "game_data/ROMS/Super Metroid (Japan, USA) (En,Ja).sfc",
+        "game_data/converted/Super Metroid - First Escape.s9x",
+        1.0, 0, 0, NULL, metroid_rules,
     },
     {
         "pokemon", "Pokemon Red - choose pokemon",
         "game_data/ROMS/Pokemon - Red Version (USA, Europe) (SGB Enhanced).zip",
         "game_data/states/Pokemon Red - choose pokemon.State",
-        1.0, 0, NULL, NULL, 0, NULL, pokemon_rules,
+        1.0, 0, 0, NULL, pokemon_rules,
     },
     {
         "rivercityransom", "River City Ransom - level 1",
         "game_data/ROMS/River City Ransom (USA).zip",
         "game_data/states/River City Ransom - level 1.State",
-        1.0, 0, NULL, NULL, 0, NULL, rivercityransom_rules,
+        1.0, 0, 0, NULL, rivercityransom_rules,
     },
     {
         "sonic", "Sonic The Hedgehog - level 1",
         "game_data/ROMS/Sonic The Hedgehog (USA, Europe).zip",
         "game_data/states/Sonic The Hedgehog - level 1.State",
-        1.0, 0, NULL, NULL, 0, NULL, sonic_rules_level1,
+        1.0, 0, 0, NULL, sonic_rules_level1,
     },
     {
         "sonic", "Sonic The Hedgehog - boss 1",
         "game_data/ROMS/Sonic The Hedgehog (USA, Europe).zip",
         "game_data/states/Sonic The Hedgehog - boss 1.State",
-        1.0, 0, NULL, NULL, 0, NULL, sonic_rules_boss,
+        1.0, 0, 0, NULL, sonic_rules_boss,
     },
     {
         "starfox", "Star Fox - boss",
         "game_data/ROMS/Star Fox (USA).zip",
         "game_data/states/Star Fox - boss.State",
-        1.0, 0, NULL, NULL, 0, NULL, starfox_rules,
+        1.0, 0, 0, NULL, starfox_rules,
     },
     {
         "sf2", "Street Fighter II Turbo - blanka vs dhalsim",
         "game_data/ROMS/Street Fighter II Turbo (USA) (Rev 1).zip",
         "game_data/states/Street Fighter II Turbo - blanka vs dhalsim.State",
-        1.0, 0, NULL, NULL, 0, NULL, streetfighter_rules,
+        1.0, 0, 0, NULL, streetfighter_rules,
     },
     {
         "sf2", "Street Fighter II Turbo - ryu vs guile",
         "game_data/ROMS/Street Fighter II Turbo (USA) (Rev 1).zip",
         "game_data/states/Street Fighter II Turbo - ryu vs guile.State",
-        1.0, 0, NULL, NULL, 0, NULL, streetfighter_rules,
+        1.0, 0, 0, NULL, streetfighter_rules,
     },
     {
         "streetsofrage2", "Streets of Rage 2 - mini boss 1",
         "game_data/ROMS/Streets of Rage 2 (USA).zip",
         "game_data/states/Streets of Rage 2 - mini boss 1.State",
-        1.0, 0, NULL, NULL, 0, NULL, sor2_rules,
+        1.0, 0, 0, NULL, sor2_rules,
     },
     {
         "superbomberman", "Super Bomberman - level 1",
         "game_data/ROMS/Super Bomberman (USA).zip",
         "game_data/states/Super Bomberman - level 1.State",
-        1.0, 0, NULL, NULL, 0, NULL, super_bomberman_rules,
+        1.0, 0, 0, NULL, super_bomberman_rules,
     },
     {
         "tetris", "Tetris",
         "game_data/ROMS/Tetris (USA).zip",
         "game_data/states/Tetris.State",
-        1.0, 0, NULL, NULL, 0, NULL, tetris_rules,
+        1.0, 0, 0, NULL, tetris_rules,
     },
     {
         "zelda1", "Legend of Zelda - take this",
         "game_data/ROMS/Legend of Zelda, The (USA) (Rev 1).zip",
         "game_data/states/Legend of Zelda - take this.State",
-        1.0, 0, NULL, NULL, 0, NULL, zelda1_rules_take_this,
+        1.0, 0, 0, NULL, zelda1_rules_take_this,
     },
     {
         "zelda1", "Legend of Zelda - boss 1",
         "game_data/ROMS/Legend of Zelda, The (USA) (Rev 1).zip",
         "game_data/states/Legend of Zelda - boss 1.State",
-        1.0, 0, NULL, NULL, 0, NULL, zelda1_rules_boss,
+        1.0, 0, 0, NULL, zelda1_rules_boss,
     },
 };
 
@@ -1732,8 +1707,6 @@ static int         g_cur = 0;
 static int         g_avail[N_CHALLENGES];
 static double      g_dynw[N_CHALLENGES];
 static char        g_cur_rom[4096] = "";
-static char       *g_rom_tmp = NULL;
-static char       *g_state_tmp = NULL;
 static int         g_pending_switch = 0, g_pending_reset = 0;
 static uint64_t    g_switch_at = 0, g_reset_at = 0;
 static unsigned    g_switch_ms = 0, g_reset_ms = 0;
@@ -1747,9 +1720,6 @@ static int         g_nshadow = 0;
 /* Cached system RAM, refreshed once per evaluation. */
 static uint8_t *g_ram = NULL;
 static size_t   g_ram_sz = 0;
-
-static char *spool_to_temp(const unsigned char *data, unsigned long len,
-                           const char *pattern);
 
 static void ram_refresh(void) {
     g_ram = g_retro.retro_get_memory_data
@@ -1960,6 +1930,43 @@ done:
 
 /* --- Selection (port of Game.lua's weight policy) -------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * Data paths: the challenge table's ROM/savestate entries are resolved
+ * relative to the directory holding the executable, so the game_data/ tree is
+ * expected next to the binary and the program can be started from anywhere.
+ * Absolute paths pass through untouched.
+ * ------------------------------------------------------------------------ */
+static char g_exe_dir[4096] = "";   /* "" => unknown, use the paths as written */
+
+static void resolve_exe_dir(void) {
+#if defined(__APPLE__)
+    uint32_t sz = sizeof(g_exe_dir);
+    if (_NSGetExecutablePath(g_exe_dir, &sz) == 0) {
+        char *slash = strrchr(g_exe_dir, '/');
+        if (slash) { *slash = '\0'; return; }
+    }
+#elif defined(__linux__)
+    ssize_t n = readlink("/proc/self/exe", g_exe_dir, sizeof(g_exe_dir) - 1);
+    if (n > 0) {
+        g_exe_dir[n] = '\0';
+        char *slash = strrchr(g_exe_dir, '/');
+        if (slash) { *slash = '\0'; return; }
+    }
+#endif
+    g_exe_dir[0] = '\0';
+}
+
+/* Resolve a table-relative path against the executable's directory; `buf` must
+ * outlive the returned pointer. */
+static const char *data_path(const char *rel, char *buf, size_t bufsz) {
+    if (!rel || !rel[0])
+        return rel;
+    if (rel[0] == '/' || !g_exe_dir[0])
+        return rel;
+    snprintf(buf, bufsz, "%s/%s", g_exe_dir, rel);
+    return buf;
+}
+
 static int file_exists(const char *p) {
     if (!p)
         return 0;
@@ -1975,8 +1982,9 @@ static void compute_availability(void) {
     int n_avail = 0;
     for (int i = 0; i < N_CHALLENGES; i++) {
         const struct challenge *c = &challenges[i];
-        int rom_ok = (c->baked_rom && c->baked_rom->len) || file_exists(c->rom);
-        int st_ok  = (c->baked_state && c->baked_state->len) || file_exists(c->state);
+        char rombuf[4096], stbuf[4096];
+        int rom_ok = file_exists(data_path(c->rom, rombuf, sizeof(rombuf)));
+        int st_ok  = file_exists(data_path(c->state, stbuf, sizeof(stbuf)));
         g_avail[i] = rom_ok && st_ok;
         g_dynw[i] = c->weight > 0.0 ? c->weight : 1.0;
         if (g_avail[i])
@@ -2065,18 +2073,8 @@ static int select_next(int current) {
 static int load_challenge(int i) {
     const struct challenge *c = &challenges[i];
 
-    const char *rom;
-    if (c->baked_rom && c->baked_rom->len) {
-        char *tmp = spool_to_temp(c->baked_rom->data, c->baked_rom->len,
-                                  "sdlarch_rom_XXXXXX");
-        if (!tmp)
-            return 0;
-        free(g_rom_tmp);
-        g_rom_tmp = tmp;
-        rom = tmp;
-    } else {
-        rom = c->rom;
-    }
+    char rombuf[4096];
+    const char *rom = data_path(c->rom, rombuf, sizeof(rombuf));
 
     int rom_same = g_game_loaded && rom[0] && strcmp(rom, g_cur_rom) == 0;
     if (rom_same) {
@@ -2096,18 +2094,8 @@ static int load_challenge(int i) {
         printf("[engine] ROM loaded: %s\n", rom);
     }
 
-    const char *st;
-    if (c->baked_state && c->baked_state->len) {
-        char *tmp = spool_to_temp(c->baked_state->data, c->baked_state->len,
-                                  "sdlarch_state_XXXXXX");
-        if (!tmp)
-            return 0;
-        free(g_state_tmp);
-        g_state_tmp = tmp;
-        st = tmp;
-    } else {
-        st = c->state;
-    }
+    char stbuf[4096];
+    const char *st = data_path(c->state, stbuf, sizeof(stbuf));
     core_load_state(st);
 
     g_cur = i;
@@ -2127,8 +2115,8 @@ static int load_challenge(int i) {
  * per-challenge scratch, as Lua's `reset()` clears the whole state table. */
 static void reload_current_state(void) {
     const struct challenge *c = &challenges[g_cur];
-    const char *st = (c->baked_state && c->baked_state->len) ? g_state_tmp
-                                                             : c->state;
+    char stbuf[4096];
+    const char *st = data_path(c->state, stbuf, sizeof(stbuf));
     if (!st)
         return;
     core_load_state(st);
@@ -2185,35 +2173,6 @@ static int match_challenge(const char *rom, const char *state) {
     return -1;
 }
 
-/* Write an embedded buffer out to a fresh temporary file and return its path
- * (caller must free). Lets the baked ROM/savestate be fed to the core through
- * the normal file-based load path. Returns NULL on failure. */
-static char *spool_to_temp(const unsigned char *data, unsigned long len,
-                           const char *pattern) {
-    if (!data || !len)
-        return NULL;
-    const char *tmp = getenv("TMPDIR");
-    if (!tmp || !*tmp)
-        tmp = "/tmp";
-    char tmpl[4096];
-    snprintf(tmpl, sizeof(tmpl), "%s/%s", tmp, pattern);
-    int fd = mkstemp(tmpl);
-    if (fd < 0)
-        return NULL;
-    unsigned long off = 0;
-    while (off < len) {
-        ssize_t w = write(fd, data + off, len - off);
-        if (w <= 0) {
-            close(fd);
-            unlink(tmpl);
-            return NULL;
-        }
-        off += (unsigned long)w;
-    }
-    close(fd);
-    return strdup(tmpl);
-}
-
 static void noop() {}
 
 int main(int argc, char *argv[]) {
@@ -2227,6 +2186,9 @@ int main(int argc, char *argv[]) {
      * buffered engine logs would be lost if the process is killed. */
     setvbuf(stdout, NULL, _IONBF, 0);
 
+    /* The challenge data tree (game_data/) is expected next to the executable. */
+    resolve_exe_dir();
+
     if (SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS) < 0)
         die("Failed to initialize SDL");
 
@@ -2239,12 +2201,6 @@ int main(int argc, char *argv[]) {
     // Load the core.
     core_load(core_path);
 
-    /* Wire the baked payloads into the challenge table (Super Mario World). */
-    res_rom          = (struct baked){ baked_rom,    baked_rom_len,    "baked ROM" };
-    res_state_boss   = (struct baked){ baked_state,  baked_state_len,  "baked state (boss)" };
-    res_state_level  = (struct baked){ baked_level1, baked_level1_len, "baked state (level 1)" };
-    res_state_castle = (struct baked){ baked_castle, baked_castle_len, "baked state (castle)" };
-
     /* Start the challenge cycle: pick the first challenge (CLI override if
      * given, otherwise weighted-random) and load its ROM + savestate. */
     printf("Available challenges:\n");
@@ -2254,7 +2210,7 @@ int main(int argc, char *argv[]) {
     if (start < 0)
         start = select_next(0);
     if (start < 0)
-        die("no challenge is loadable: no ROM/state on disk and none baked");
+        die("no challenge is loadable: no ROM/state on disk");
     if (!load_challenge(start))
         die("failed to load first challenge: %s", challenges[start].name);
 
@@ -2356,8 +2312,6 @@ int main(int argc, char *argv[]) {
         free(g_vars);
     }
 
-    free(g_rom_tmp);
-    free(g_state_tmp);
     SDL_Quit();
 
     return EXIT_SUCCESS;

@@ -1,3 +1,4 @@
 *.o
 build/
 /sdlarch
+/game_data

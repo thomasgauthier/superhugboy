@@ -22,7 +22,7 @@ static uint64_t g_last_frame = 0;
 static const uint8_t *g_kbd = NULL;
 static struct retro_audio_callback audio_callback;
 
-static float g_scale = 3;
+enum { WINDOW_WIDTH = 960, WINDOW_HEIGHT = 720 };
 bool running = true;
 
 static struct {
@@ -37,6 +37,7 @@ static struct {
 	GLuint pitch;
 	GLint tex_w, tex_h;
 	GLuint clip_w, clip_h;
+    float aspect_ratio;
 
 	GLuint pixfmt;
 	GLuint pixtype;
@@ -63,7 +64,7 @@ static struct {
 static float g_game_mvp[4][4];
 
 /* Title card (defined with the challenge table, drawn from video_refresh). */
-static void card_draw(int win_w, int win_h);
+static void card_draw(int x, int y, int win_w, int win_h);
 static void card_deinit(void);
 
 static struct retro_variable *g_vars = NULL;
@@ -331,18 +332,14 @@ static void init_framebuffer(int width, int height)
 }
 
 
-static void resize_cb(int w, int h) {
-	glViewport(0, 0, w, h);
-}
-
-
-static void create_window(int width, int height) {
+static void create_window(void) {
     SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
 
-    g_win = SDL_CreateWindow("sdlarch", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_OPENGL);
+    g_win = SDL_CreateWindow("sdlarch", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                            WINDOW_WIDTH, WINDOW_HEIGHT, SDL_WINDOW_OPENGL);
 
 	if (!g_win)
         die("Failed to create window: %s", SDL_GetError());
@@ -432,34 +429,29 @@ static void create_window(int width, int height) {
     SDL_GL_SetSwapInterval(1);
     SDL_GL_SwapWindow(g_win); // make apitrace output nicer
 
-    resize_cb(width, height);
 }
 
 
-static void resize_to_aspect(double ratio, int sw, int sh, int *dw, int *dh) {
-	*dw = sw;
-	*dh = sh;
-
-	if (ratio <= 0)
-		ratio = (double)sw / sh;
-
-	if ((float)sw / sh < 1)
-		*dw = *dh * ratio;
-	else
-		*dh = *dw / ratio;
+/* Center the complete game image inside the drawable, preserving core aspect. */
+static SDL_Rect game_viewport(int width, int height) {
+    SDL_Rect view = {0, 0, width, height};
+    double aspect = g_video.aspect_ratio > 0 ? g_video.aspect_ratio
+                                            : (double)g_video.clip_w / g_video.clip_h;
+    if (width > height * aspect)
+        view.w = (int)(height * aspect + 0.5);
+    else
+        view.h = (int)(width / aspect + 0.5);
+    view.x = (width - view.w) / 2;
+    view.y = (height - view.h) / 2;
+    return view;
 }
 
 
 static void video_configure(const struct retro_game_geometry *geom) {
-	int nwidth, nheight;
-
-	resize_to_aspect(geom->aspect_ratio, geom->base_width * 1, geom->base_height * 1, &nwidth, &nheight);
-
-	nwidth *= g_scale;
-	nheight *= g_scale;
-
-	if (!g_win)
-		create_window(nwidth, nheight);
+    g_video.aspect_ratio = geom->aspect_ratio;
+    if (!g_win) {
+        create_window();
+    }
 
 	if (g_video.tex_id)
 		glDeleteTextures(1, &g_video.tex_id);
@@ -469,7 +461,6 @@ static void video_configure(const struct retro_game_geometry *geom) {
 	if (!g_video.pixfmt)
 		g_video.pixfmt = GL_UNSIGNED_SHORT_5_5_5_1;
 
-    SDL_SetWindowSize(g_win, nwidth, nheight);
 
 	glGenTextures(1, &g_video.tex_id);
 
@@ -551,10 +542,13 @@ static void video_refresh(const void *data, unsigned width, unsigned height, uns
 	}
 
     int w = 0, h = 0;
-    SDL_GetWindowSize(g_win, &w, &h);
-    glViewport(0, 0, w, h);
-
+    SDL_GL_GetDrawableSize(g_win, &w, &h);
+    if (w <= 0 || h <= 0) return;
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
+    SDL_Rect view = game_viewport(w, h);
+    glViewport(view.x, view.y, view.w, view.h);
 
     glUseProgram(g_shader.program);
 
@@ -568,9 +562,8 @@ static void video_refresh(const void *data, unsigned width, unsigned height, uns
 
     glUseProgram(0);
 
-    /* Overlay, not a cutscene: the game keeps running and the quad's geometry
-     * is untouched, so the frame never shifts. */
-    card_draw(w, h);
+    /* The card shares the fitted game viewport, never the surrounding bars. */
+    card_draw(view.x, view.y, view.w, view.h);
 
     SDL_GL_SwapWindow(g_win);
 }
@@ -898,19 +891,11 @@ static bool core_environment(unsigned cmd, void *data) {
         const struct retro_game_geometry *geom = (const struct retro_game_geometry *)data;
         g_video.clip_w = geom->base_width;
         g_video.clip_h = geom->base_height;
+        g_video.aspect_ratio = geom->aspect_ratio;
 
         // some cores call this before we even have a window
-        if (g_win) {
+        if (g_win)
             refresh_vertex_data();
-
-            int ow = 0, oh = 0;
-            resize_to_aspect(geom->aspect_ratio, geom->base_width, geom->base_height, &ow, &oh);
-
-            ow *= g_scale;
-            oh *= g_scale;
-
-            SDL_SetWindowSize(g_win, ow, oh);
-        }
         return true;
     }
     case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME: {
@@ -2202,7 +2187,7 @@ static void card_build(int win_w, int win_h, const struct card_layout *L) {
     g_card.dirty = 0;
 }
 
-static void card_draw(int win_w, int win_h) {
+static void card_draw(int x, int y, int win_w, int win_h) {
     if (!g_card.showing) return;
     if (SDL_GetTicks64() - g_card.armed_at >= CARD_MS) {
         g_card.showing = 0;
@@ -2233,9 +2218,9 @@ static void card_draw(int win_w, int win_h) {
     glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
     glEnable(GL_SCISSOR_TEST);
     glClearColor(0, 0, 0, 1);
-    glScissor(0, win_h - g_card.top_h, win_w, g_card.top_h);
+    glScissor(x, y + win_h - g_card.top_h, win_w, g_card.top_h);
     glClear(GL_COLOR_BUFFER_BIT);
-    glScissor(0, 0, win_w, g_card.bot_h);
+    glScissor(x, y, win_w, g_card.bot_h);
     glClear(GL_COLOR_BUFFER_BIT);
     glDisable(GL_SCISSOR_TEST);
     glClearColor(clear[0], clear[1], clear[2], clear[3]);
@@ -2847,7 +2832,7 @@ int main(int argc, char *argv[]) {
     if (!load_challenge(start))
         die("failed to load first challenge: %s", challenges[start].name);
 
-    printf("Controls: F9 save state | T force switch | ESC quit\n");
+    printf("Controls: F fullscreen | F9 save state | T force switch | ESC quit\n");
     printf("The engine picks the next challenge at random (weighted); the\n");
     printf("Super Mario World interlude is forced every %.0fs.\n\n",
            INTERLUDE_INTERVAL_S);
@@ -2877,18 +2862,21 @@ int main(int argc, char *argv[]) {
             case SDL_KEYDOWN:
                 if (!ev.key.repeat && ev.key.keysym.scancode == SDL_SCANCODE_F9)
                     save_state_to_disk();
+                if (!ev.key.repeat && ev.key.keysym.scancode == SDL_SCANCODE_F) {
+                    Uint32 flags = SDL_GetWindowFlags(g_win) & SDL_WINDOW_FULLSCREEN
+                                   ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP;
+                    if (SDL_SetWindowFullscreen(g_win, flags) < 0)
+                        fprintf(stderr, "[video] fullscreen toggle failed: %s\n", SDL_GetError());
+                }
                 if (!ev.key.repeat && ev.key.keysym.scancode == SDL_SCANCODE_T) {
                     g_force_switch = 1;
                     printf("[engine] force switch requested (T)\n");
                 }
                 break;
             case SDL_WINDOWEVENT:
-                switch (ev.window.event) {
-                case SDL_WINDOWEVENT_CLOSE: running = false; break;
-                case SDL_WINDOWEVENT_RESIZED:
-                    resize_cb(ev.window.data1, ev.window.data2);
-                    break;
-                }
+                if (ev.window.event == SDL_WINDOWEVENT_CLOSE)
+                    running = false;
+                break;
             }
         }
 

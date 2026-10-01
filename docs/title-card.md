@@ -25,6 +25,10 @@ display at all.
 Two plates, spanning the full width of the game image (not the window — on a pillarboxed window the
 plates must align with the quad's edges, not float over the side bars).
 
+The frontend fits each core into a fixed 960×720 window, or the desktop in fullscreen.
+The card uses that fitted game viewport, including its offset; it never fills the surrounding
+letterbox or pillarbox space.
+
 ```
 +--------------------------------------------------+  <- top plate, pinned to y = 0
 |            SUPER MARIO WORLD                     |     line 1: display title
@@ -76,21 +80,21 @@ must be readable in one frame and why no reveal animation is permitted.
 | Overflow | The scale steps down rather than wrap; wrapping remains the floor if no scale can fit the words |
 | Case | Uppercase |
 | Colour | Top plate white; bottom plate yellow (`rgb(255,255,0)`). See *Plate colours*. |
-| Coordinate space | Core framebuffer space, drawn through the same transform as the video quad |
+| Coordinate space | Drawable pixels local to the fitted game viewport; plates and text share the video viewport |
 | Character set | ASCII `0x20`-`0x7E` (see *Transliteration*) |
 
-Fit rule, measured in **window pixels** because that is where the text lands, and **per plate**
+Fit rule, measured in **game-viewport pixels**, and **per plate**
 because each plate draws at its own scale:
 
 ```
-usable_columns(plate) = (window_width - 2 * pad_x * plate_scale) / (cell_width * plate_scale)
+usable_columns(plate) = (game_viewport_width - 2 * pad_x * plate_scale) / (cell_width * plate_scale)
 ```
 
 `pad_x` is 8. The card scale starts at `base * CARD_SCALE_MULT`, where `base` is the largest integer
-scale at which the core's framebuffer maps 1:1 into the window, and steps down to 1.
-A scale is accepted when every line fits whole and both bars fit inside the window.
+scale at which the core's framebuffer maps 1:1 into the fitted game viewport, and steps down to 1.
+A scale is accepted when every line fits whole and both bars fit inside that viewport.
 At scale 1, word wrapping is allowed if no text is truncated. If even that layout cannot fit,
-the card is not drawn at that window size.
+the card is not drawn at that viewport size.
 
 At normal gameplay window sizes, authored lines stay whole. The stock SDL2_gfx 8×8 font is wider
 than the former custom 6×8 option, so some challenges use smaller card scales to keep their text
@@ -194,8 +198,8 @@ from the challenge rows — authored once, by ROM. See *Open questions*.
 3. `T` → new challenge, new plates, immediately; no trace of the previous card.
 4. `ACT_RESET` path → card re-armed on reload.
 5. A blank-text challenge → no plates, nothing drawn.
-6. Across an entire run: the game image never shifts, resizes, or gains/loses a border. The only
-   thing that changes is pixels drawn on top.
+6. Showing or hiding the card never changes the game viewport. Only core geometry or fullscreen
+   changes alter the fitted image; the windowed size remains 960×720 across the run.
 7. Bars start at `CARD_SCALE_MULT` (3) times their 1× thickness, stepping down as needed for
    the 8×8 font. The top caption uses half again the 1:1 scale (capped by card scale);
    the objective uses 80% of card scale, rounded to an integer. Both are centred.
@@ -205,7 +209,7 @@ from the challenge rows — authored once, by ROM. See *Open questions*.
 
 ## Non-goals
 
-Letterboxing the game itself · per-challenge generated artwork · fade/slide reveals · pause-on-card ·
+Game viewport sizing (handled by the frontend) · per-challenge generated artwork · fade/slide reveals · pause-on-card ·
 end-of-run scorecard · stage numbering · input-gated dismissal · drawing outside the framebuffer.
 
 ## Open questions
@@ -230,7 +234,7 @@ end-of-run scorecard · stage numbering · input-gated dismissal · drawing outs
   quad per line at the plate's integer text scale. There is no private font, glyph atlas,
   or per-character vertex generation.
 - **Caching.** Layout, text texture and line vertices rebuild on challenge load, reset,
-  window resize or framebuffer dimension changes, not every frame.
+  fullscreen viewport size or framebuffer dimension changes, not every frame.
 - **Font cache lifetime.** SDL2_gfx caches glyph textures globally. Reset that cache before
   destroying the temporary software renderer.
 - **State restore.** The card pass saves and restores the clear colour and puts the game

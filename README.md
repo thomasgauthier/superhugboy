@@ -60,9 +60,20 @@ A challenge is only offered when its ROM, its savestate **and** its core are all
 count printed at startup is the number of playable challenges — and the ones marked `x` are missing
 data, not broken logic.
 
+## Display
+
+Every core uses the same fixed, non-resizable **960×720** window. Games are centered and
+scaled to fit without cropping or stretching, using the core's aspect ratio (or the frame's
+width/height ratio when the core supplies none). Unused space is black. Core switches and
+runtime geometry changes never resize the window.
+
+`F` toggles desktop fullscreen without changing the monitor's resolution. Leaving fullscreen
+restores the 960×720 window; switching cores preserves fullscreen. Title cards remain inside
+the fitted game image, not over the surrounding black bars.
+
 ## Controls
 
-`F9` writes the current state · `T` forces the next challenge · `ESC` quits.
+`F` toggles fullscreen · `F9` writes the current state · `T` forces the next challenge · `ESC` quits.
 
 If no audio device can be opened (headless hosts, `xvfb`), the port reports it and runs silent
 instead of refusing to start.

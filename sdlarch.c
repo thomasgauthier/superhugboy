@@ -2303,7 +2303,7 @@ static void card_draw(int win_w, int win_h) {
     GLfloat clear[4];
     float m[4][4];
     struct card_vert *v;
-    int fb_w, fb_h, base, scale;
+    int fb_w, fb_h, base, scale, title_scale;
     int nv = 0, title_verts = 0;
 
     if (!g_card.showing)
@@ -2343,9 +2343,20 @@ static void card_draw(int win_w, int win_h) {
         L.bot_h = win_h;
 
     v = g_card.verts;
-    for (int i = 0; i < L.ntop; i++)
-        card_emit_line(L.top[i], L.cell_w, L.scale, win_w, L.pad_y + i * L.line_h,
-                       &v, &nv, CARD_MAX_VERTS);
+    /* The cartridge's identity is a caption, the objective is the headline: the
+     * top text draws at the framebuffer's own 1:1 scale, centred in a bar that
+     * keeps the card's thickness. */
+    title_scale = base;
+    if (title_scale > scale)
+        title_scale = scale;
+    {
+        int top_line_h = CARD_CELL_H * title_scale;
+        int block_h = L.ntop * top_line_h;
+        int top_y = ((L.top_h - block_h) / (2 * title_scale)) * title_scale;
+        for (int i = 0; i < L.ntop; i++)
+            card_emit_line(L.top[i], L.cell_w, title_scale, win_w,
+                           top_y + i * top_line_h, &v, &nv, CARD_MAX_VERTS);
+    }
     title_verts = nv;   /* the top plate is drawn first, and tinted differently */
     for (int i = 0; i < L.nbot; i++)
         card_emit_line(L.bot[i], L.cell_w, L.scale, win_w,

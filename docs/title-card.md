@@ -69,7 +69,9 @@ must be readable in one frame and why no reveal animation is permitted.
 | Property | Requirement |
 |---|---|
 | Typeface | Embedded monospace bitmap, integer-scaled, no antialiasing, no letterspacing |
-| Size | The whole card is `CARD_SCALE_MULT` (3) times the glyph scale the framebuffer maps to 1:1, so bars and type grow together |
+| Bar size | The bars are `CARD_SCALE_MULT` (3) times the glyph scale the framebuffer maps to 1:1, so they thicken with the card |
+| Top text | Draws at the framebuffer's own 1:1 scale and sits centred, both ways, inside its bar — the cartridge's identity is a caption |
+| Bottom text | Draws at the card's full scale — the objective is the headline |
 | Cell size | Largest of `{8x8, 6x8}` at which every authored line still fits whole |
 | Overflow | Lines wrap inside their plate; if a word still cannot be shown, the scale steps down |
 | Case | Uppercase |
@@ -91,15 +93,15 @@ Because the type triples, the metadata line no longer fits beside the title on e
 wraps. That is expected: the bars are sized from their text, so wrapping makes them taller, which
 is what "at least 3×" asks for.
 
-Observed sizes at `CARD_SCALE_MULT = 3`:
+Observed at `CARD_SCALE_MULT = 3`:
 
-| System | Window | Base | Used | Bars (top / bottom) |
-|---|---|---|---|---|
-| NES / SNES | 768x588 | 2 | 6 (3×) | 192 px / 96 px — 4× and 3× the 1× card |
-| Genesis | 960x705 | 3 | 9 (3×) | 360 px / 216 px |
-| Game Boy | 480x432 | 3 | 5 (1.7×) | 160 px / 120 px |
+| System | Window | Base | Bar scale | Bottom text | Top text | Bars (top / bottom) |
+|---|---|---|---|---|---|---|
+| NES / SNES | 768x588 | 2 | 6 | 6 (3×) | 2 (1:1) | 192 px / 96 px — 4× and 3× the 1× card |
+| Genesis | 960x705 | 3 | 9 | 9 (3×) | 3 (1:1) | 360 px / 216 px |
+| Game Boy | 480x432 | 3 | 5 | 5 (1.7×) | 3 (1:1) | 160 px / 120 px |
 
-Game Boy is the one system that cannot reach 3×: a 480 px window cannot hold a 19-character
+Game Boy is the one system whose bar scale cannot reach 3×: a 480 px window cannot hold a 19-character
 metadata line at triple size even wrapped, so the search stops where the card still fits.
 
 A Game Boy frame cannot fit a metadata line at `8x8`; `6x8` is the working size on narrow frames.
@@ -205,9 +207,10 @@ from the challenge rows — authored once, by ROM. See *Open questions*.
 5. A blank-text challenge → no plates, nothing drawn.
 6. Across an entire run: the game image never shifts, resizes, or gains/loses a border. The only
    thing that changes is pixels drawn on top.
-7. Both plates come out at least triple their 1× thickness wherever the window allows it, with the
-   type grown to match: 3× on NES, SNES and Genesis, and 1.7× on Game Boy, where a 480 px window
-   cannot hold the metadata at triple size.
+7. Both bars come out at least triple their 1× thickness wherever the window allows: 3× on NES,
+   SNES and Genesis, 1.7× on Game Boy, where a 480 px window cannot hold the metadata at triple
+   size. The bottom text scales with the bars; the top text stays at its 1:1 size and sits centred
+   in its bar.
 8. At every scale the search reaches, nothing is cut: no word clipped, no line past the window
    edge, no plate taller than the window, no plate covering the other.
 

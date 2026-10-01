@@ -2537,6 +2537,16 @@ static int file_exists(const char *p) {
  * data root above it, exactly like game_data/.
  * ------------------------------------------------------------------------ */
 struct core_map { const char *suffix; const char *files[3]; };
+#if defined(__APPLE__)
+/* macOS builds link Mach-O dylibs: same lookup keys, different filenames. */
+static const struct core_map g_cores[] = {
+    { ".s9x",                     { "snes9x_libretro.dylib", NULL, NULL } },
+    { ".libretro-quicknes.state", { "quicknes_libretro.dylib", NULL, NULL } },
+    { ".libretro-gambatte.state", { "gambatte_libretro.dylib", NULL, NULL } },
+    { ".libretro-gpgx.state",     { "genesis_plus_gx_libretro.dylib", NULL, NULL } },
+    { NULL, { NULL, NULL, NULL } }
+};
+#else
 static const struct core_map g_cores[] = {
     { ".s9x",                     { "snes9x_libretro.so", "snes9x_libretro_v12.so", NULL } },
     { ".libretro-quicknes.state", { "quicknes_libretro.so", NULL, NULL } },
@@ -2544,6 +2554,7 @@ static const struct core_map g_cores[] = {
     { ".libretro-gpgx.state",     { "genesis_plus_gx_libretro.so", NULL, NULL } },
     { NULL, { NULL, NULL, NULL } }
 };
+#endif
 
 /* Core for a challenge state path, or NULL when the system has no core present.
  * `buf` must outlive the returned pointer. */

@@ -49,6 +49,8 @@ another system:
 | `*.libretro-gambatte.state` | `gambatte_libretro.so` |
 | `*.libretro-gpgx.state` | `genesis_plus_gx_libretro.so` |
 
+macOS builds look for the same names with a `.dylib` extension instead.
+
 A challenge is only offered when its ROM, its savestate **and** its core are all present, so the
 count printed at startup is the number of playable challenges — and the ones marked `x` are missing
 data, not broken logic.

@@ -1,6 +1,8 @@
 # Title card (in-game overlay)
 
-Status: **specified, not implemented.**
+Status: **implemented** in `sdlarch.c` (branch `hugboycpp`). The card module sits
+with the challenge table, the pass is drawn at the end of `video_refresh()`, and
+the timer is armed from `load_challenge()` and `reload_current_state()`.
 
 ## What it is
 
@@ -137,11 +139,12 @@ Requirements:
 - Display titles should be authored to fit the narrowest plate: **<= 24 characters**, which every
   current title satisfies (`CASTLEVANIA`, `DONKEY KONG COUNTRY`, `SONIC THE HEDGEHOG`,
   `POKEMON RED`, `SUPER METROID`, `METAL SLUG 3`).
-- `games.csv` is not safe to split on commas naively — quoted fields contain commas
-  (`"Pokemon - Red Version (USA, Europe) (SGB Enhanced).zip"`). Parse as CSV.
+- `games.csv` is not used for this. It would need real CSV parsing (quoted fields contain
+  commas: `"Pokemon - Red Version (USA, Europe) (SGB Enhanced).zip"`) and it carries no
+  year or publisher to parse in the first place.
 
-Open: whether year/publisher are new `games.csv` columns or a separate metadata table. Either way
-they are authored once, by ROM.
+Storage: an in-code `static const struct game_meta` per cartridge, referenced by pointer
+from the challenge rows — authored once, by ROM. See *Open questions*.
 
 ## Edge cases
 
@@ -174,9 +177,42 @@ end-of-run scorecard · stage numbering · input-gated dismissal · drawing outs
 
 ## Open questions
 
-1. Where the port's level qualifier goes. `struct challenge.name` is `"Castlevania - level 1"`; the
-   game half belongs to the top plate, but the level half has no home in the two-plate layout.
-   Options: a second line in the bottom plate, appended to the top plate's title line, or dropped.
-2. `challenge_text_pos` — confirm it is dropped in favour of the fixed layout rather than honoured
-   as an override.
-3. Year/publisher storage: `games.csv` columns or a separate ROM-keyed table.
+1. **Where the port's level qualifier goes — resolved: nowhere.** `struct challenge.name`
+   is `"Castlevania - level 1"`, but the top plate carries the ROM's *display title* and
+   the bottom plate carries the upstream objective; the two-plate layout has no third
+   slot, and putting "level 1" in either would duplicate or muddy what is already there.
+   `name` is unchanged and still used for the engine log and command-line matching.
+2. **`challenge_text_pos` — resolved: not ported.** The rows carry `challenge_text`
+   only; the corpus' hand-tuned coordinates (`{128,96}`, `{80,32}`, …) were not brought
+   over, because the fixed plates supersede them.
+3. **Year/publisher storage — resolved: in code.** One `static const struct game_meta`
+   per cartridge, referenced from each challenge row by pointer, so a ROM's year and
+   publisher exist exactly once and cannot drift between the challenges that share it.
+   `games.csv` is not involved, so its quoted-comma rows never need parsing.
+
+## Implementation notes
+
+- **Cell choice.** The largest of `{8x8, 6x8}` at which all three authored lines fit the
+  core's own width is used, so the type is as large as the cartridge allows. In practice
+  every system but Game Boy lands on `8x8`; Game Boy's `1998 - NINTENDO - GB` needs `6x8`
+  to fit 160 px. Verified on NES, SNES, Genesis and Game Boy.
+- **Glyph atlas.** One 128x64 RGBA texture holding 8x8 cells for ASCII 0x20-0x7E, with
+  each glyph occupying the left 5 columns and top 7 rows, so a `6x8` cell is the same
+  glyph sampled one column narrower rather than a second font.
+- **The shader's matrix convention.** `gl_Position = vec4(i_pos, 0, 1) * u_mvp` multiplies
+  the position as a *row* vector, so the matrix the shader consumes is the transpose of
+  the usual column-vector ortho. `ortho2d()` never exposed this because the game quad's
+  matrix has no translation; a pixel-space matrix with translation in the bottom row
+  silently produces `w != 1` and collapses every vertex. `card_ortho()` builds the matrix
+  in the layout the shader actually consumes.
+- **`GL_UNPACK_ROW_LENGTH`.** `video_refresh()` leaves it set to the video pitch for its
+  own upload. An atlas upload that inherits it reads its rows at the wrong stride, so the
+  glyph texture is built with an explicit `glPixelStorei(GL_UNPACK_ROW_LENGTH, 0)`.
+- **State restore.** The card pass saves and restores the clear colour and puts the game
+  quad's matrix back into `u_mvp`, because the two passes share one program.
+- **Pre-existing engine bug, not part of this feature.** `g_pending_reset` is never
+  cleared after the reset fires, so `reload_current_state()` runs once per frame from
+  then on — the state reloads ~50x/s and the game appears frozen. Since the card is armed
+  on each reload, a challenge that resets keeps its card on screen indefinitely. The
+  card's own behaviour is per spec; the loop is in the reset path.
+

@@ -56,6 +56,14 @@ static struct {
 
 } g_shader = {0};
 
+/* The matrix init_shaders() gave the game quad. The card pass overwrites the
+ * shared u_mvp uniform, so it has to put this back. */
+static float g_game_mvp[4][4];
+
+/* Title card (defined with the challenge table, drawn from video_refresh). */
+static void card_draw(int win_w, int win_h);
+static void card_deinit(void);
+
 static struct retro_variable *g_vars = NULL;
 
 static const char *g_vshader_src =
@@ -233,6 +241,8 @@ static void init_shaders() {
         ortho2d(m, -1, 1, 1, -1);
     else
         ortho2d(m, -1, 1, -1, 1);
+
+    memcpy(g_game_mvp, m, sizeof g_game_mvp);
 
     glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float*)m);
 
@@ -551,6 +561,10 @@ static void video_refresh(const void *data, unsigned width, unsigned height, uns
 
     glUseProgram(0);
 
+    /* Overlay, not a cutscene: the game keeps running and the quad's geometry
+     * is untouched, so the frame never shifts. */
+    card_draw(w, h);
+
     SDL_GL_SwapWindow(g_win);
 }
 
@@ -569,6 +583,8 @@ static void video_deinit() {
 
     if (g_shader.program)
         glDeleteProgram(g_shader.program);
+
+    card_deinit();
 
     g_video.fbo_id = 0;
 	g_video.tex_id = 0;
@@ -1205,6 +1221,15 @@ struct rule {
 
 struct rw { uint16_t addr; uint8_t value; };
 
+/* A cartridge's identity, authored once per ROM and shared by every challenge
+ * that runs it (the title card's top plate). */
+struct game_meta {
+    const char *title;     /* display title, uppercase, at most 24 columns */
+    const char *year;
+    const char *publisher;
+    const char *platform;  /* abbreviated: NES, SNES, GB, GBA, GEN, NEOGEO */
+};
+
 struct challenge {
     const char *slug;        /* game group (labeling) */
     const char *name;        /* human label */
@@ -1215,6 +1240,8 @@ struct challenge {
     int         n_writes;
     const struct rw  *writes; /* per-frame RAM writes (interlude force-spawn) */
     const struct rule *rules; /* ACT_NONE-terminated */
+    const struct game_meta *game; /* cartridge identity (title card) */
+    const char *text;             /* upstream challenge_text; "" = no card */
 };
 
 /* Sample constructors (field order: addr, size, be, sgn, prev, mask, shift,
@@ -1487,6 +1514,53 @@ static const struct rule zelda1_rules_boss[] = {
     { .act = ACT_NONE },
 };
 
+/* --- Cartridge identities: authored once per ROM, shared by its challenges -- */
+
+static const struct game_meta game_alttp = {
+    "A LINK TO THE PAST", "1991", "NINTENDO", "SNES" };
+static const struct game_meta game_castlevania = {
+    "CASTLEVANIA", "1987", "KONAMI", "NES" };
+static const struct game_meta game_dkc = {
+    "DONKEY KONG COUNTRY", "1994", "NINTENDO", "SNES" };
+static const struct game_meta game_earthbound = {
+    "EARTHBOUND", "1995", "NINTENDO", "SNES" };
+static const struct game_meta game_gradius = {
+    "GRADIUS", "1986", "KONAMI", "NES" };
+static const struct game_meta game_kirby = {
+    "KIRBY'S ADVENTURE", "1993", "NINTENDO", "NES" };
+static const struct game_meta game_linksawakening = {
+    "LINK'S AWAKENING DX", "1998", "NINTENDO", "GB" };
+static const struct game_meta game_mario1 = {
+    "SUPER MARIO BROS.", "1985", "NINTENDO", "NES" };
+static const struct game_meta game_mario3 = {
+    "SUPER MARIO BROS. 3", "1990", "NINTENDO", "NES" };
+static const struct game_meta game_marioworld = {
+    "SUPER MARIO WORLD", "1991", "NINTENDO", "SNES" };
+static const struct game_meta game_megaman = {
+    "MEGA MAN", "1987", "CAPCOM", "NES" };
+static const struct game_meta game_metroid = {
+    "METROID", "1987", "NINTENDO", "NES" };
+static const struct game_meta game_pokemon = {
+    "POKEMON RED", "1998", "NINTENDO", "GB" };
+static const struct game_meta game_rivercity = {
+    "RIVER CITY RANSOM", "1990", "TECHNOS", "NES" };
+static const struct game_meta game_sonic = {
+    "SONIC THE HEDGEHOG", "1991", "SEGA", "GEN" };
+static const struct game_meta game_sor2 = {
+    "STREETS OF RAGE 2", "1992", "SEGA", "GEN" };
+static const struct game_meta game_starfox = {
+    "STAR FOX", "1993", "NINTENDO", "SNES" };
+static const struct game_meta game_sf2 = {
+    "STREET FIGHTER II TURBO", "1993", "CAPCOM", "SNES" };
+static const struct game_meta game_superbomberman = {
+    "SUPER BOMBERMAN", "1993", "HUDSON SOFT", "SNES" };
+static const struct game_meta game_supermetroid = {
+    "SUPER METROID", "1994", "NINTENDO", "SNES" };
+static const struct game_meta game_tetris = {
+    "TETRIS", "1989", "NINTENDO", "NES" };
+static const struct game_meta game_zelda1 = {
+    "THE LEGEND OF ZELDA", "1987", "NINTENDO", "NES" };
+
 /* --- Challenge table: the port of the ../challenges Lua handlers ----------- */
 
 static const struct challenge challenges[] = {
@@ -1495,216 +1569,252 @@ static const struct challenge challenges[] = {
         "game_data/ROMS/Legend of Zelda, The - A Link to the Past (USA).zip",
         "game_data/states/A Link to the Past - mini boss.State",
         1.0, 0, 0, NULL, alttp_rules,
+        .game = &game_alttp, .text = "Free the princess!",
     },
     {
         "castlevania", "Castlevania - level 1",
         "game_data/ROMS/Castlevania (USA) (Rev A).nes",
         "game_data/converted/Castlevania - level 1.libretro-quicknes.state",
         1.0, 0, 0, NULL, castlevania_rules,
+        .game = &game_castlevania, .text = "Finish the screen!",
     },
     {
         "donkeykong", "Donkey Kong Country - level 1",
         "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).sfc",
         "game_data/converted/Donkey Kong Country - level 1.s9x",
         1.0, 0, 0, NULL, dkc_rules_level1,
+        .game = &game_dkc, .text = "Finish the level!",
     },
     {
         "donkeykong", "Donkey Kong Country - barrel level",
         "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).sfc",
         "game_data/converted/Donkey Kong Country - barrel level.s9x",
         1.0, 0, 0, NULL, dkc_rules_barrel,
+        .game = &game_dkc, .text = "Pass the barrels!",
     },
     {
         "donkeykong", "Donkey Kong Country - boss 1",
         "game_data/ROMS/Donkey Kong Country (USA) (Rev 2).sfc",
         "game_data/converted/Donkey Kong Country - boss 1.s9x",
         1.0, 0, 0, NULL, dkc_rules_boss1,
+        .game = &game_dkc, .text = "Beat the boss!",
     },
     {
         "earthbound", "EarthBound - battle",
         "game_data/ROMS/EarthBound (USA).zip",
         "game_data/states/EarthBound - battle.State",
         1.0, 0, 0, NULL, earthbound_rules,
+        .game = &game_earthbound, .text = "Win the fight!",
     },
     {
         "gradius", "Gradius - boss",
         "game_data/ROMS/Gradius (USA).zip",
         "game_data/states/Gradius - boss.State",
         1.0, 0, 0, NULL, gradius_rules,
+        .game = &game_gradius, .text = "Defeat the boss!",
     },
     {
         "kirby", "Kirby's Adventure - mini boss",
         "game_data/ROMS/Kirby's Adventure (USA) (Rev A).nes",
         "game_data/converted/Kirby's Adventure - mini boss.libretro-quicknes.state",
         1.0, 0, 0, NULL, kirby_rules_miniboss,
+        .game = &game_kirby, .text = "Defeat the boss!",
     },
     {
         "kirby", "Kirby's Adventure - level 1 (until door)",
         "game_data/ROMS/Kirby's Adventure (USA) (Rev A).nes",
         "game_data/converted/Kirby's Adventure - level 1 (until door).libretro-quicknes.state",
         1.0, 0, 0, NULL, kirby_rules_level1,
+        .game = &game_kirby, .text = "Reach the door!",
     },
     {
         "awakening_boss", "Link's Awakening - mini boss",
         "game_data/ROMS/Legend of Zelda, The - Link's Awakening DX (USA, Europe) (SGB Enhanced).gb",
         "game_data/converted/Link's Awakening - mini boss.libretro-gambatte.state",
         1.0, 0, 0, NULL, linksawakening_rules,
+        .game = &game_linksawakening, .text = "Defeat the boss!",
     },
     {
         "mario1", "Super Mario Bros - castle",
         "game_data/ROMS/Super Mario Bros. (Japan, USA).nes",
         "game_data/converted/Super Mario Bros - castle.libretro-quicknes.state",
         0.5, 0, 0, NULL, mario1_rules_castle,
+        .game = &game_mario1, .text = "Defeat Bowser!",
     },
     {
         "mario1", "Super Mario Bros - 1-1",
         "game_data/ROMS/Super Mario Bros. (Japan, USA).nes",
         "game_data/converted/Super Mario Bros - 1-1.libretro-quicknes.state",
         0.5, 0, 0, NULL, mario1_rules_1_1,
+        .game = &game_mario1, .text = "Beat the level!",
     },
     {
         "mario3", "Super Mario Bros. 3 - first mini boss",
         "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).nes",
         "game_data/converted/Super Mario Bros. 3 - first mini boss.libretro-quicknes.state",
         0.5, 0, 0, NULL, mario3_rules_miniboss,
+        .game = &game_mario3, .text = "Beat the boss!",
     },
     {
         "mario3", "Super Mario Bros. 3 - crushing ceiling",
         "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).nes",
         "game_data/converted/Super Mario Bros. 3 - crushing ceiling.libretro-quicknes.state",
         0.5, 0, 0, NULL, mario3_rules_ceiling,
+        .game = &game_mario3, .text = "Reach the door!",
     },
     {
         "mario3", "Super Mario Bros. 3 - hammer bro",
         "game_data/ROMS/Super Mario Bros. 3 (USA) (Rev 1).nes",
         "game_data/converted/Super Mario Bros. 3 - hammer bro.libretro-quicknes.state",
         0.5, 0, 0, NULL, mario3_rules_hammer,
+        .game = &game_mario3, .text = "Beat the hammer bro!",
     },
     {
         "marioworld", "Super Mario World - level 1",
         "game_data/ROMS/Super Mario World (USA).sfc",
         "game_data/converted/Super Mario World - level 1.s9x",
         0.5, 0, 0, NULL, marioworld_rules_level1,
+        .game = &game_marioworld, .text = "Beat the level!",
     },
     {
         "marioworld", "Super Mario World - castle level",
         "game_data/ROMS/Super Mario World (USA).sfc",
         "game_data/converted/Super Mario World - castle level.s9x",
         0.5, 0, 0, NULL, marioworld_rules_castle,
+        .game = &game_marioworld, .text = "Reach the door!",
     },
     {
         "marioworld", "Super Mario World - first boss",
         "game_data/ROMS/Super Mario World (USA).sfc",
         "game_data/converted/Super Mario World - first boss.s9x",
         0.5, 0, 0, NULL, marioworld_rules_boss,
+        .game = &game_marioworld, .text = "Defeat the boss!",
     },
     {
         "marioworldinterlude", "Super Mario World - interlude",
         "game_data/ROMS/Super Mario World (USA).sfc",
         "game_data/converted/Super Mario World - interlude.s9x",
         1.0, 1, 1, interlude_writes, marioworld_interlude_rules,
+        .game = &game_marioworld, .text = "",
     },
     {
         "megaman", "Mega Man - bomb man",
         "game_data/ROMS/Mega Man (USA).nes",
         "game_data/converted/Mega Man - bomb man.libretro-quicknes.state",
         1.0, 0, 0, NULL, megaman_rules,
+        .game = &game_megaman, .text = "Finish the screen!",
     },
     {
         "megaman", "Mega Man - fire man",
         "game_data/ROMS/Mega Man (USA).nes",
         "game_data/converted/Mega Man - fire man.libretro-quicknes.state",
         1.0, 0, 0, NULL, megaman_rules,
+        .game = &game_megaman, .text = "Finish the screen!",
     },
     {
         "megaman", "Mega Man - cut man",
         "game_data/ROMS/Mega Man (USA).nes",
         "game_data/converted/Mega Man - cut man.libretro-quicknes.state",
         1.0, 0, 0, NULL, megaman_rules,
+        .game = &game_megaman, .text = "Finish the screen!",
     },
     {
         "metroid_classic", "Metroid - level 1",
         "game_data/ROMS/Metroid (USA).zip",
         "game_data/states/Metroid - level 1.State",
         1.0, 0, 0, NULL, metroid_classic_rules,
+        .game = &game_metroid, .text = "Reach the door!",
     },
     {
         "supermetroid_escape", "Super Metroid - First Escape",
         "game_data/ROMS/Super Metroid (Japan, USA) (En,Ja).sfc",
         "game_data/converted/Super Metroid - First Escape.s9x",
         1.0, 0, 0, NULL, metroid_rules,
+        .game = &game_supermetroid, .text = "Escape!",
     },
     {
         "pokemon", "Pokemon Red - choose pokemon",
         "game_data/ROMS/Pokemon - Red Version (USA, Europe) (SGB Enhanced).gb",
         "game_data/converted/Pokemon Red - choose pokemon.libretro-gambatte.state",
         1.0, 0, 0, NULL, pokemon_rules,
+        .game = &game_pokemon, .text = "Choose a Pokemon!",
     },
     {
         "rivercityransom", "River City Ransom - level 1",
         "game_data/ROMS/River City Ransom (USA).zip",
         "game_data/states/River City Ransom - level 1.State",
         1.0, 0, 0, NULL, rivercityransom_rules,
+        .game = &game_rivercity, .text = "Finish the screen!",
     },
     {
         "sonic", "Sonic The Hedgehog - level 1",
         "game_data/ROMS/Sonic The Hedgehog (USA, Europe).md",
         "game_data/converted/Sonic The Hedgehog - level 1.libretro-gpgx.state",
         1.0, 0, 0, NULL, sonic_rules_level1,
+        .game = &game_sonic, .text = "Beat the level!",
     },
     {
         "sonic", "Sonic The Hedgehog - boss 1",
         "game_data/ROMS/Sonic The Hedgehog (USA, Europe).md",
         "game_data/converted/Sonic The Hedgehog - boss 1.libretro-gpgx.state",
         1.0, 0, 0, NULL, sonic_rules_boss,
+        .game = &game_sonic, .text = "Defeat the boss!",
     },
     {
         "starfox", "Star Fox - boss",
         "game_data/ROMS/Star Fox (USA).zip",
         "game_data/states/Star Fox - boss.State",
         1.0, 0, 0, NULL, starfox_rules,
+        .game = &game_starfox, .text = "Beat the boss!",
     },
     {
         "sf2", "Street Fighter II Turbo - blanka vs dhalsim",
         "game_data/ROMS/Street Fighter II Turbo (USA) (Rev 1).zip",
         "game_data/states/Street Fighter II Turbo - blanka vs dhalsim.State",
         1.0, 0, 0, NULL, streetfighter_rules,
+        .game = &game_sf2, .text = "Win the fight!",
     },
     {
         "sf2", "Street Fighter II Turbo - ryu vs guile",
         "game_data/ROMS/Street Fighter II Turbo (USA) (Rev 1).zip",
         "game_data/states/Street Fighter II Turbo - ryu vs guile.State",
         1.0, 0, 0, NULL, streetfighter_rules,
+        .game = &game_sf2, .text = "Win the fight!",
     },
     {
         "streetsofrage2", "Streets of Rage 2 - mini boss 1",
         "game_data/ROMS/Streets of Rage 2 (USA).md",
         "game_data/converted/Streets of Rage 2 - mini boss 1.libretro-gpgx.state",
         1.0, 0, 0, NULL, sor2_rules,
+        .game = &game_sor2, .text = "Defeat the boss!",
     },
     {
         "superbomberman", "Super Bomberman - level 1",
         "game_data/ROMS/Super Bomberman (USA).zip",
         "game_data/states/Super Bomberman - level 1.State",
         1.0, 0, 0, NULL, super_bomberman_rules,
+        .game = &game_superbomberman, .text = "Finish the level!",
     },
     {
         "tetris", "Tetris",
         "game_data/ROMS/Tetris (USA).nes",
         "game_data/converted/Tetris.libretro-quicknes.state",
         1.0, 0, 0, NULL, tetris_rules,
+        .game = &game_tetris, .text = "Make 1 line!",
     },
     {
         "zelda1", "Legend of Zelda - take this",
         "game_data/ROMS/Legend of Zelda, The (USA) (Rev 1).nes",
         "game_data/converted/Legend of Zelda - take this.libretro-quicknes.state",
         1.0, 0, 0, NULL, zelda1_rules_take_this,
+        .game = &game_zelda1, .text = "",
     },
     {
         "zelda1", "Legend of Zelda - boss 1",
         "game_data/ROMS/Legend of Zelda, The (USA) (Rev 1).nes",
         "game_data/converted/Legend of Zelda - boss 1.libretro-quicknes.state",
         1.0, 0, 0, NULL, zelda1_rules_boss,
+        .game = &game_zelda1, .text = "Defeat the boss!",
     },
 };
 
@@ -1734,6 +1844,430 @@ static uint64_t    g_last_interlude = 0;
 static uint16_t    g_stable[MAX_RULES];
 static struct shadow g_shadow[MAX_SHADOWS];
 static int         g_nshadow = 0;
+
+/* --- Title card ------------------------------------------------------------
+ *
+ * Upstream superhugboy overlays the current challenge's `challenge_text` on the
+ * frame for five seconds after a state load, and draws nothing else. The port
+ * restores that as the bottom plate and adds a top plate carrying the ROM's
+ * identity. The game keeps running underneath: the card is a pure overlay, so
+ * nothing is paused, no input is gated, and the video transform is untouched.
+ * See docs/title-card.md.
+ */
+
+#define CARD_MS          5000  /* upstream's `challenge_text_timer = 5` */
+#define CARD_PAD_X       8     /* margin, framebuffer px */
+#define CARD_PAD_Y       4     /* plate padding, framebuffer px */
+#define CARD_CELL_H      8
+#define CARD_GLYPH_W     5     /* glyph box inside an 8x8 atlas cell */
+#define CARD_CELL_MIN_W  6     /* narrow cell: 5 px glyph + 1 px gap */
+#define CARD_CELL_MAX_W  8
+#define CARD_MAX_LINES   3     /* per plate */
+#define CARD_MAX_COLS    96
+#define CARD_ATLAS_CELL  8
+#define CARD_ATLAS_COLS  16
+#define CARD_ATLAS_W     (CARD_ATLAS_COLS * CARD_ATLAS_CELL)
+#define CARD_ATLAS_H     (8 * CARD_ATLAS_CELL)
+#define CARD_FIRST_CHAR  0x20
+#define CARD_LAST_CHAR   0x7E
+#define CARD_MAX_VERTS   (6 * CARD_MAX_LINES * 2 * CARD_MAX_COLS)
+
+/* 5x7 glyphs, one byte per row, bit 4 = leftmost column. ASCII 0x20-0x7E. */
+static const uint8_t card_font[][7] = {
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, /*   */
+    { 0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04 }, /* ! */
+    { 0x0A, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00 }, /* " */
+    { 0x0A, 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x0A }, /* # */
+    { 0x04, 0x0F, 0x14, 0x0E, 0x05, 0x1E, 0x04 }, /* $ */
+    { 0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03 }, /* % */
+    { 0x0C, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0D }, /* & */
+    { 0x04, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00 }, /* ' */
+    { 0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02 }, /* ( */
+    { 0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08 }, /* ) */
+    { 0x00, 0x15, 0x0E, 0x1F, 0x0E, 0x15, 0x00 }, /* * */
+    { 0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00 }, /* + */
+    { 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x08 }, /* , */
+    { 0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00 }, /* - */
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C }, /* . */
+    { 0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10 }, /* / */
+    { 0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E }, /* 0 */
+    { 0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E }, /* 1 */
+    { 0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F }, /* 2 */
+    { 0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E }, /* 3 */
+    { 0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02 }, /* 4 */
+    { 0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E }, /* 5 */
+    { 0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E }, /* 6 */
+    { 0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08 }, /* 7 */
+    { 0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E }, /* 8 */
+    { 0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C }, /* 9 */
+    { 0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x00 }, /* : */
+    { 0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x08 }, /* ; */
+    { 0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02 }, /* < */
+    { 0x00, 0x00, 0x1F, 0x00, 0x1F, 0x00, 0x00 }, /* = */
+    { 0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08 }, /* > */
+    { 0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04 }, /* ? */
+    { 0x0E, 0x11, 0x17, 0x15, 0x17, 0x10, 0x0E }, /* @ */
+    { 0x04, 0x0A, 0x11, 0x11, 0x1F, 0x11, 0x11 }, /* A */
+    { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E }, /* B */
+    { 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E }, /* C */
+    { 0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C }, /* D */
+    { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F }, /* E */
+    { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10 }, /* F */
+    { 0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F }, /* G */
+    { 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 }, /* H */
+    { 0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E }, /* I */
+    { 0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C }, /* J */
+    { 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 }, /* K */
+    { 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F }, /* L */
+    { 0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11 }, /* M */
+    { 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 }, /* N */
+    { 0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E }, /* O */
+    { 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10 }, /* P */
+    { 0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D }, /* Q */
+    { 0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11 }, /* R */
+    { 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E }, /* S */
+    { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 }, /* T */
+    { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E }, /* U */
+    { 0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04 }, /* V */
+    { 0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11 }, /* W */
+    { 0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11 }, /* X */
+    { 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04 }, /* Y */
+    { 0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F }, /* Z */
+    { 0x0E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0E }, /* [ */
+    { 0x10, 0x08, 0x08, 0x04, 0x02, 0x02, 0x01 }, /* \ */
+    { 0x0E, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0E }, /* ] */
+    { 0x04, 0x0A, 0x11, 0x00, 0x00, 0x00, 0x00 }, /* ^ */
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F }, /* _ */
+    { 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00 }, /* ` */
+    { 0x00, 0x00, 0x0E, 0x01, 0x0F, 0x11, 0x0F }, /* a */
+    { 0x10, 0x10, 0x1E, 0x11, 0x11, 0x11, 0x1E }, /* b */
+    { 0x00, 0x00, 0x0E, 0x10, 0x10, 0x11, 0x0E }, /* c */
+    { 0x01, 0x01, 0x0F, 0x11, 0x11, 0x11, 0x0F }, /* d */
+    { 0x00, 0x00, 0x0E, 0x11, 0x1F, 0x10, 0x0E }, /* e */
+    { 0x06, 0x08, 0x08, 0x1E, 0x08, 0x08, 0x08 }, /* f */
+    { 0x00, 0x0F, 0x11, 0x11, 0x0F, 0x01, 0x0E }, /* g */
+    { 0x10, 0x10, 0x1E, 0x11, 0x11, 0x11, 0x11 }, /* h */
+    { 0x04, 0x00, 0x0C, 0x04, 0x04, 0x04, 0x0E }, /* i */
+    { 0x02, 0x00, 0x06, 0x02, 0x02, 0x12, 0x0C }, /* j */
+    { 0x10, 0x10, 0x12, 0x14, 0x18, 0x14, 0x12 }, /* k */
+    { 0x0C, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E }, /* l */
+    { 0x00, 0x00, 0x1A, 0x15, 0x15, 0x11, 0x11 }, /* m */
+    { 0x00, 0x00, 0x1E, 0x11, 0x11, 0x11, 0x11 }, /* n */
+    { 0x00, 0x00, 0x0E, 0x11, 0x11, 0x11, 0x0E }, /* o */
+    { 0x00, 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10 }, /* p */
+    { 0x00, 0x0F, 0x11, 0x11, 0x0F, 0x01, 0x01 }, /* q */
+    { 0x00, 0x00, 0x16, 0x18, 0x10, 0x10, 0x10 }, /* r */
+    { 0x00, 0x00, 0x0F, 0x10, 0x0E, 0x01, 0x1E }, /* s */
+    { 0x08, 0x08, 0x1E, 0x08, 0x08, 0x09, 0x06 }, /* t */
+    { 0x00, 0x00, 0x11, 0x11, 0x11, 0x13, 0x0D }, /* u */
+    { 0x00, 0x00, 0x11, 0x11, 0x11, 0x0A, 0x04 }, /* v */
+    { 0x00, 0x00, 0x11, 0x11, 0x15, 0x15, 0x0A }, /* w */
+    { 0x00, 0x00, 0x11, 0x0A, 0x04, 0x0A, 0x11 }, /* x */
+    { 0x00, 0x11, 0x11, 0x11, 0x0F, 0x01, 0x0E }, /* y */
+    { 0x00, 0x00, 0x1F, 0x02, 0x04, 0x08, 0x1F }, /* z */
+    { 0x03, 0x04, 0x04, 0x08, 0x04, 0x04, 0x03 }, /* { */
+    { 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 }, /* | */
+    { 0x18, 0x04, 0x04, 0x02, 0x04, 0x04, 0x18 }, /* } */
+    { 0x00, 0x00, 0x0D, 0x12, 0x00, 0x00, 0x00 }, /* ~ */
+};
+
+struct card_vert { float x, y, u, v; };
+
+static struct {
+    GLuint   vao, vbo, atlas;
+    uint64_t armed_at;
+    int      showing;
+    struct card_vert verts[CARD_MAX_VERTS];
+} g_card = { 0 };
+
+/* Arm the card for the challenge now in g_cur. Loaded anywhere a savestate is
+ * loaded, so the first drop, an ordinary switch, `T` and `ACT_RESET` all show
+ * it, and a challenge with no text shows nothing. */
+static void card_begin(void) {
+    const struct challenge *c = &challenges[g_cur];
+    g_card.armed_at = SDL_GetTicks64();
+    g_card.showing = (c->game && c->text && c->text[0]) ? 1 : 0;
+}
+
+static void card_deinit(void) {
+    if (g_card.atlas) glDeleteTextures(1, &g_card.atlas);
+    if (g_card.vao)   glDeleteVertexArrays(1, &g_card.vao);
+    if (g_card.vbo)   glDeleteBuffers(1, &g_card.vbo);
+    g_card.atlas = 0;
+    g_card.vao = 0;
+    g_card.vbo = 0;
+}
+
+/* Build the glyph atlas and the card's own VAO/VBO. The game quad's buffer is
+ * rebuilt only on a video configure, so the card must not share it. */
+static void card_init_gl(void) {
+    uint8_t px[CARD_ATLAS_W * CARD_ATLAS_H * 4];
+    memset(px, 0, sizeof px);
+
+    for (size_t g = 0; g < sizeof card_font / sizeof card_font[0]; g++) {
+        int ox = (int)(g % CARD_ATLAS_COLS) * CARD_ATLAS_CELL;
+        int oy = (int)(g / CARD_ATLAS_COLS) * CARD_ATLAS_CELL;
+        for (int ry = 0; ry < 7; ry++) {
+            for (int rx = 0; rx < CARD_GLYPH_W; rx++) {
+                if (!(card_font[g][ry] & (1 << (CARD_GLYPH_W - 1 - rx))))
+                    continue;
+                uint8_t *d = &px[((oy + ry) * CARD_ATLAS_W + ox + rx) * 4];
+                d[0] = 255;
+                d[1] = 255;
+                d[2] = 255;
+                d[3] = 255;
+            }
+        }
+    }
+
+    glGenTextures(1, &g_card.atlas);
+    glBindTexture(GL_TEXTURE_2D, g_card.atlas);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    /* video_refresh leaves UNPACK_ROW_LENGTH set to the video pitch for its own
+     * upload; inheriting it here would read the atlas rows at the wrong stride. */
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, CARD_ATLAS_W, CARD_ATLAS_H, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, px);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    glGenVertexArrays(1, &g_card.vao);
+    glGenBuffers(1, &g_card.vbo);
+    glBindVertexArray(g_card.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, g_card.vbo);
+    glEnableVertexAttribArray(g_shader.i_pos);
+    glEnableVertexAttribArray(g_shader.i_coord);
+    glVertexAttribPointer(g_shader.i_pos, 2, GL_FLOAT, GL_FALSE,
+                          sizeof(struct card_vert), (void *)0);
+    glVertexAttribPointer(g_shader.i_coord, 2, GL_FLOAT, GL_FALSE,
+                          sizeof(struct card_vert), (void *)(2 * sizeof(float)));
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+/* Uppercase, drop what the atlas cannot draw, and greedily wrap `src` into at
+ * most `max` lines of `cols` columns. Returns the number of lines written. */
+static int card_paragraph(const char *src, int cols, char out[][CARD_MAX_COLS], int max) {
+    int line = 0;
+    size_t len = 0;
+
+    if (max < 1)
+        return 0;
+    if (cols < 1)
+        cols = 1;
+    out[0][0] = '\0';
+
+    while (*src) {
+        char word[CARD_MAX_COLS];
+        size_t wlen = 0;
+
+        while (*src == ' ')
+            src++;
+        if (!*src)
+            break;
+        while (*src && *src != ' ') {
+            char ch = *src++;
+            if (ch >= 'a' && ch <= 'z')
+                ch -= 'a' - 'A';
+            if ((unsigned char)ch >= 0x80) {
+                /* Skip the rest of a UTF-8 sequence: "pokemon" must not become
+                 * "pokmon" if a transliterated string ever slips back in. */
+                while (*src && ((unsigned char)*src & 0xC0) == 0x80)
+                    src++;
+                continue;
+            }
+            if (ch < CARD_FIRST_CHAR || ch > CARD_LAST_CHAR)
+                continue;
+            if (wlen + 1 < sizeof word)
+                word[wlen++] = ch;
+        }
+        if (!wlen)
+            continue;
+        if (wlen > (size_t)cols)
+            wlen = (size_t)cols;
+        if (len && len + 1 + wlen > (size_t)cols) {
+            if (line + 1 >= max)
+                break;
+            line++;
+            out[line][0] = '\0';
+            len = 0;
+        }
+        if (len)
+            out[line][len++] = ' ';
+        memcpy(out[line] + len, word, wlen);
+        len += wlen;
+        out[line][len] = '\0';
+    }
+
+    return line + 1;
+}
+
+/* Pixel-space matrix for the card's own pass. The vertex shader multiplies the
+ * position as a row vector (`vec4(i_pos, 0, 1) * u_mvp`), so the matrix it
+ * consumes is the transpose of the usual column-vector ortho: the translation
+ * belongs in the last column of this layout, and the bottom row stays
+ * (0, 0, 0, 1) so w comes out as 1. The game quad's own matrix is translation
+ * free, which is why ortho2d() never had to care. */
+static void card_ortho(int win_w, int win_h, float m[4][4]) {
+    memset(m, 0, sizeof(float) * 16);
+    m[0][0] =  2.0f / (float)win_w;
+    m[1][1] = -2.0f / (float)win_h;
+    m[0][3] = -1.0f;
+    m[1][3] =  1.0f;
+    m[2][2] =  1.0f;
+    m[3][3] =  1.0f;
+}
+
+/* Emit the quads for one line of text, centred horizontally, top at `y`. */
+static void card_emit_line(const char *line, int cell_w, int scale, int win_w, int y,
+                           struct card_vert **vpp, int *nv, int maxv) {
+    size_t n = strlen(line);
+    struct card_vert *v = *vpp;
+    int added = 0;
+
+    if (n) {
+        int gw = cell_w * scale, gh = CARD_CELL_H * scale;
+        int x0 = ((win_w - (int)n * gw) / (2 * scale)) * scale;
+
+        for (size_t i = 0; i < n; i++) {
+            unsigned char ch = (unsigned char)line[i];
+            int g = (ch >= CARD_FIRST_CHAR && ch <= CARD_LAST_CHAR)
+                  ? ch - CARD_FIRST_CHAR : 0;
+            float u0 = (float)((g % CARD_ATLAS_COLS) * CARD_ATLAS_CELL) / CARD_ATLAS_W;
+            float t0 = (float)((g / CARD_ATLAS_COLS) * CARD_ATLAS_CELL) / CARD_ATLAS_H;
+            float u1 = u0 + (float)cell_w / CARD_ATLAS_W;
+            float t1 = t0 + (float)CARD_ATLAS_CELL / CARD_ATLAS_H;
+            float xa = (float)(x0 + (int)i * gw), ya = (float)y;
+            float xb = xa + gw, yb = ya + gh;
+            struct card_vert quad[6] = {
+                { xa, ya, u0, t0 }, { xb, ya, u1, t0 }, { xa, yb, u0, t1 },
+                { xb, ya, u1, t0 }, { xb, yb, u1, t1 }, { xa, yb, u0, t1 },
+            };
+
+            if (*nv + added + 6 > maxv)
+                break;
+            memcpy(v + added, quad, sizeof quad);
+            added += 6;
+        }
+    }
+
+    *vpp = v + added;
+    *nv += added;
+}
+
+/* The two plates plus their text, over the frame the game just produced. */
+static void card_draw(int win_w, int win_h) {
+    const struct challenge *c;
+    char meta[CARD_MAX_COLS];
+    char top[CARD_MAX_LINES][CARD_MAX_COLS];
+    char bot[CARD_MAX_LINES][CARD_MAX_COLS];
+    GLfloat clear[4];
+    float m[4][4];
+    struct card_vert *v;
+    int fb_w, fb_h, cell_w, cols, ntop, nbot, scale, line_h, pad_y, top_h, bot_h;
+    int nv = 0;
+    size_t longest;
+
+    if (!g_card.showing)
+        return;
+    if (SDL_GetTicks64() - g_card.armed_at >= CARD_MS) {
+        g_card.showing = 0;   /* hard cut: no fade */
+        return;
+    }
+    if (!g_card.atlas)
+        card_init_gl();
+    if (!g_card.atlas || win_w < 32 || win_h < 32)
+        return;
+
+    c = &challenges[g_cur];
+    snprintf(meta, sizeof meta, "%s - %s - %s", c->game->year,
+             c->game->publisher, c->game->platform);
+
+    /* The core's own width decides the cell: the largest at which every line
+     * still fits is the one used, so the type stays as big as it can be. */
+    fb_w = g_video.clip_w > 0 ? (int)g_video.clip_w : 256;
+    fb_h = g_video.clip_h > 0 ? (int)g_video.clip_h : 224;
+    longest = strlen(c->text);
+    if (strlen(c->game->title) > longest)
+        longest = strlen(c->game->title);
+    if (strlen(meta) > longest)
+        longest = strlen(meta);
+    cell_w = CARD_CELL_MIN_W;
+    if ((int)longest <= (fb_w - 2 * CARD_PAD_X) / CARD_CELL_MAX_W)
+        cell_w = CARD_CELL_MAX_W;
+    cols = (fb_w - 2 * CARD_PAD_X) / cell_w;
+    if (cols > CARD_MAX_COLS - 1)
+        cols = CARD_MAX_COLS - 1;
+    if (cols < 1)
+        cols = 1;
+
+    ntop = card_paragraph(c->game->title, cols, top, CARD_MAX_LINES);
+    if (ntop < CARD_MAX_LINES)
+        ntop += card_paragraph(meta, cols, top + ntop, CARD_MAX_LINES - ntop);
+    nbot = card_paragraph(c->text, cols, bot, CARD_MAX_LINES);
+
+    /* Integer, square-pixel scale: the card never antialiases or stretches. */
+    scale = win_w / fb_w;
+    if (win_h / fb_h < scale)
+        scale = win_h / fb_h;
+    if (scale < 1)
+        scale = 1;
+    line_h = CARD_CELL_H * scale;
+    pad_y  = CARD_PAD_Y * scale;
+    top_h  = ntop * line_h + 2 * pad_y;
+    bot_h  = nbot * line_h + 2 * pad_y;
+    if (top_h > win_h)
+        top_h = win_h;
+    if (bot_h > win_h)
+        bot_h = win_h;
+
+    v = g_card.verts;
+    for (int i = 0; i < ntop; i++)
+        card_emit_line(top[i], cell_w, scale, win_w, pad_y + i * line_h,
+                       &v, &nv, CARD_MAX_VERTS);
+    for (int i = 0; i < nbot; i++)
+        card_emit_line(bot[i], cell_w, scale, win_w,
+                       win_h - bot_h + pad_y + i * line_h,
+                       &v, &nv, CARD_MAX_VERTS);
+    if (!nv)
+        return;
+
+    /* Plates: an opaque black clear inside the plate rect, over the game image.
+     * Full window width, because the video quad fills the window. */
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
+    glEnable(GL_SCISSOR_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glScissor(0, win_h - top_h, win_w, top_h);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glScissor(0, 0, win_w, bot_h);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(clear[0], clear[1], clear[2], clear[3]);
+
+    card_ortho(win_w, win_h, m);
+
+    glUseProgram(g_shader.program);
+    glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float *)m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_card.atlas);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBindVertexArray(g_card.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, g_card.vbo);
+    glBufferData(GL_ARRAY_BUFFER, (long)nv * (long)sizeof(struct card_vert),
+                 g_card.verts, GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, nv);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glDisable(GL_BLEND);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    /* The game quad shares this program and this uniform: put its matrix back. */
+    glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float *)g_game_mvp);
+    glUseProgram(0);
+}
 
 /* Cached system RAM, refreshed once per evaluation. */
 static uint8_t *g_ram = NULL;
@@ -2194,6 +2728,8 @@ static int load_challenge(int i) {
 
     printf("[engine] challenge: %s (%s) weight=%.2f%s\n",
            c->name, c->slug, c->weight, c->interlude ? " interlude" : "");
+
+    card_begin();
     return 1;
 }
 
@@ -2210,6 +2746,7 @@ static void reload_current_state(void) {
     memset(g_stable, 0, sizeof(g_stable));
     ram_refresh();
     refresh_shadows();
+    card_begin();
 }
 
 static void do_switch(void) {

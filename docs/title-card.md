@@ -1,14 +1,16 @@
 # Title card (in-game overlay)
 
 Status: **implemented** in `sdlarch.c` (branch `hugboycpp`). The card module sits
-with the challenge table, the pass is drawn at the end of `video_refresh()`, and
-the timer is armed from `load_challenge()` and `reload_current_state()`.
+with the challenge table. Live cards are drawn at the end of `video_refresh()`;
+the challenge reel also draws each preview's matching card through `card_render()`.
+The timer is re-armed when the winner enters live play.
 
 ## What it is
 
 When hugboy drops you into a challenge, two black plates appear over the live gameplay — one
 pinned to the top of the frame, one pinned to the bottom — carrying the game's identity and the
-challenge objective. Five seconds later they are gone. The game runs underneath the whole time.
+challenge objective. After five seconds, the top plate and its text slide up, and the bottom
+plate and its text slide down, leaving the window over 450 ms. The game runs underneath the whole time.
 
 It is an overlay, not a cutscene. Inputs are never blocked, the simulation is never paused, and
 nothing on screen resizes.
@@ -22,12 +24,10 @@ display at all.
 
 ## Layout
 
-Two plates, spanning the full width of the game image (not the window — on a pillarboxed window the
-plates must align with the quad's edges, not float over the side bars).
-
-The frontend fits each core into a fixed 960×720 window, or the desktop in fullscreen.
-The card uses that fitted game viewport, including its offset; it never fills the surrounding
-letterbox or pillarbox space.
+Two plates span the full drawable window width, including letterbox and pillarbox space.
+The overlay uses a separate full-window viewport; the fitted game image is unchanged.
+At a given window size, every nonblank challenge uses the same bar heights and text scales,
+regardless of core resolution, aspect ratio, or objective length.
 
 ```
 +--------------------------------------------------+  <- top plate, pinned to y = 0
@@ -44,8 +44,8 @@ letterbox or pillarbox space.
 
 | Plate | Anchored | Contents |
 |---|---|---|
-| Top | `y = 0`, full framebuffer width | Line 1: game display title. Line 2: year - publisher - platform. |
-| Bottom | `y = framebuffer_height`, full framebuffer width | Challenge text (upstream `challenge_text`). |
+| Top | `y = 0`, full window width | Line 1: game display title. Line 2: year - publisher - platform. |
+| Bottom | `y = window_height`, full window width | Challenge text (upstream `challenge_text`). |
 | Both | — | Solid `rgb(0,0,0)`. Text centred horizontally and vertically inside its bar. |
 
 Plate height = `lines * cell_height + 2 * pad_y`. Plate colour is pure black; opacity is one
@@ -56,43 +56,46 @@ constant (opaque recommended — it is what makes the plates read as letterboxin
 | Property | Requirement |
 |---|---|
 | Appears on | `load_challenge()` and `reload_current_state()` — cold start, every switch, every `ACT_RESET` |
-| Duration | 5 s (5000 ms), wall clock; same clock as `INTERLUDE_INTERVAL_S` |
-| Expiry | Hard cut. Both plates appear and vanish together. No fade, slide, typewriter, or minimum display time |
+| Duration | 5 s (5000 ms) hold, then 450 ms exit; wall clock |
+| Expiry | Both plates and their text slide outward together with smoothstep easing, rounded to drawable pixels. No fade or reveal animation |
 | Dismissable | No. No key, no input, no click |
-| Pauses game | No. Sim advances; rules evaluate from frame 0 |
-| Blocks input | No |
+| Pauses game | No during live play. The separate challenge reel freezes simulation and rules |
+| Blocks input | No during live play. The reel accepts only fullscreen/quit controls |
 | Changes geometry | No. Game quad transform untouched; no letterbox added or removed |
 | Re-arms on | `T` force-switch, `ACT_RESET` reload, ordinary switch |
 
-A challenge whose rule fires at `0s` may show its card for a single frame before the next
-challenge's card replaces it. That is upstream behaviour, not a defect. It is also why the plates
-must be readable in one frame and why no reveal animation is permitted.
+During the theatrical challenge reel, every preview shows its own card at rest; the card and
+opening screenshot scroll together (or cut together in `ROLL_CUT` mode). The winning card is
+held through the landing pause, then gets a fresh five-second hold as gameplay starts.
+A `0s` rule can immediately begin another reel once live play resumes; rules are never delayed
+by the live card. There is no reveal animation.
 
 ## Typography
 
 | Property | Requirement |
 |---|---|
 | Typeface | Embedded monospace bitmap, integer-scaled, no antialiasing, no letterspacing |
-| Bar size | The bars are `CARD_SCALE_MULT` (3) times the glyph scale the framebuffer maps to 1:1, so they thicken with the card |
-| Top text | Draws at half again the framebuffer's own 1:1 scale and sits centred, both ways, inside its bar — the cartridge's identity is a caption |
+| Bar size | The bars are `CARD_SCALE_MULT` (3) times a window-relative base glyph scale, so they thicken with the card |
+| Top text | Draws at half again the window-relative base scale and sits centred, both ways, inside its bar — the cartridge's identity is a caption |
 | Bottom text | Draws at 80% of the card's scale — the objective is the headline, trimmed just enough to sit one step under the bars |
 | Cell size | Fixed 8×8 SDL2_gfx bitmap-font cell |
 | Overflow | The scale steps down rather than wrap; wrapping remains the floor if no scale can fit the words |
 | Case | Uppercase |
 | Colour | Top plate white; bottom plate yellow (`rgb(255,255,0)`). See *Plate colours*. |
-| Coordinate space | Drawable pixels local to the fitted game viewport; plates and text share the video viewport |
+| Coordinate space | Drawable window pixels; the overlay has its own full-window viewport |
 | Character set | ASCII `0x20`-`0x7E` (see *Transliteration*) |
 
-Fit rule, measured in **game-viewport pixels**, and **per plate**
+Fit rule, measured in **drawable window pixels**, and **per plate**
 because each plate draws at its own scale:
 
 ```
-usable_columns(plate) = (game_viewport_width - 2 * pad_x * plate_scale) / (cell_width * plate_scale)
+usable_columns(plate) = (window_width - 2 * pad_x * plate_scale) / (cell_width * plate_scale)
 ```
 
-`pad_x` is 8. The card scale starts at `base * CARD_SCALE_MULT`, where `base` is the largest integer
-scale at which the core's framebuffer maps 1:1 into the fitted game viewport, and steps down to 1.
-A scale is accepted when every line fits whole and both bars fit inside that viewport.
+`pad_x` is 8. The card scale starts at `base * CARD_SCALE_MULT`, where
+`base = max(1, drawable_window_height / 240)`, and steps down to 1.
+A shared scale is accepted only when every nonblank challenge fits inside the window.
+Core framebuffer dimensions do not participate.
 At scale 1, word wrapping is allowed if no text is truncated. If even that layout cannot fit,
 the card is not drawn at that viewport size.
 
@@ -192,7 +195,7 @@ from the challenge rows — authored once, by ROM. See *Open questions*.
 ## Acceptance criteria
 
 1. Launch a named challenge → both plates visible over live gameplay on the first frame, carrying
-   title, metadata and objective; gone after 5 s.
+   title, metadata and objective; hold for 5 s, slide outward, fully gone at 5.45 s.
 2. Rules still fire while the plates are up — a `0s`-switch challenge moves on immediately, with no
    delay from the card.
 3. `T` → new challenge, new plates, immediately; no trace of the previous card.
@@ -201,7 +204,7 @@ from the challenge rows — authored once, by ROM. See *Open questions*.
 6. Showing or hiding the card never changes the game viewport. Only core geometry or fullscreen
    changes alter the fitted image; the windowed size remains 960×720 across the run.
 7. Bars start at `CARD_SCALE_MULT` (3) times their 1× thickness, stepping down as needed for
-   the 8×8 font. The top caption uses half again the 1:1 scale (capped by card scale);
+   the 8×8 font. The top caption uses half again the window-relative base scale (capped by card scale);
    the objective uses 80% of card scale, rounded to an integer. Both are centred.
    Whole lines are preferred; wrapping is only the scale-1 fallback.
 8. At every scale the search reaches, nothing is cut: no word clipped, no line past the window
@@ -210,7 +213,7 @@ from the challenge rows — authored once, by ROM. See *Open questions*.
 ## Non-goals
 
 Game viewport sizing (handled by the frontend) · per-challenge generated artwork · fade/slide reveals · pause-on-card ·
-end-of-run scorecard · stage numbering · input-gated dismissal · drawing outside the framebuffer.
+end-of-run scorecard · stage numbering · input-gated dismissal · per-core card sizing.
 
 ## Open questions
 
@@ -234,15 +237,13 @@ end-of-run scorecard · stage numbering · input-gated dismissal · drawing outs
   quad per line at the plate's integer text scale. There is no private font, glyph atlas,
   or per-character vertex generation.
 - **Caching.** Layout, text texture and line vertices rebuild on challenge load, reset,
-  fullscreen viewport size or framebuffer dimension changes, not every frame.
+  drawable window size changes, not every frame. Core framebuffer dimensions do not invalidate it.
 - **Font cache lifetime.** SDL2_gfx caches glyph textures globally. Reset that cache before
   destroying the temporary software renderer.
 - **State restore.** The card pass saves and restores the clear colour and puts the game
   quad's matrix and tint back into `u_mvp` and `u_tint`, because the two passes share one
   program.
-- **Pre-existing engine bug, not part of this feature.** `g_pending_reset` is never
-  cleared after the reset fires, so `reload_current_state()` runs once per frame from
-  then on — the state reloads ~50x/s and the game appears frozen. Since the card is armed
-  on each reload, a challenge that resets keeps its card on screen indefinitely. The
-  card's own behaviour is per spec; the loop is in the reset path.
+- **Reset consumption.** `reload_current_state()` clears `g_pending_reset` and starts
+  a reel with the current challenge as winner. The state is reloaded once at landing,
+  rather than retriggering a reset/reel on every frame.
 

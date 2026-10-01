@@ -6,6 +6,8 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <math.h>
+#include <sys/stat.h>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
@@ -21,6 +23,9 @@ static double g_fps = 60.0;
 static uint64_t g_last_frame = 0;
 static const uint8_t *g_kbd = NULL;
 static struct retro_audio_callback audio_callback;
+/* Preview preparation and theatrical transitions never accept game input/audio. */
+static int g_theatre = 0, g_preview_warming = 0;
+static SDL_Surface *g_preview_capture = NULL;
 
 enum { WINDOW_WIDTH = 960, WINDOW_HEIGHT = 720 };
 bool running = true;
@@ -541,6 +546,35 @@ static void video_refresh(const void *data, unsigned width, unsigned height, uns
 						g_video.pixtype, g_video.pixfmt, data);
 	}
 
+    if (g_preview_warming) {
+        if (data && !g_preview_capture) {
+            g_preview_capture = SDL_CreateRGBSurfaceWithFormat(0, width, height,
+                                                              32, SDL_PIXELFORMAT_RGBA32);
+            if (!g_preview_capture) die("Cannot allocate preview: %s", SDL_GetError());
+            glBindFramebuffer(GL_FRAMEBUFFER, g_video.fbo_id);
+            glPixelStorei(GL_PACK_ALIGNMENT, 4);
+            glPixelStorei(GL_PACK_ROW_LENGTH, g_preview_capture->pitch / 4);
+            glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE,
+                         g_preview_capture->pixels);
+            glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            /* Software uploads are top-first; hardware framebuffers may not be. */
+            if (g_video.hw.bottom_left_origin) {
+                unsigned char *pixels = g_preview_capture->pixels;
+                int pitch = g_preview_capture->pitch;
+                unsigned char *row = malloc(pitch);
+                if (!row) die("Cannot allocate preview row");
+                for (unsigned y = 0; y < height / 2; y++) {
+                    unsigned char *a = pixels + y * pitch;
+                    unsigned char *b = pixels + (height - 1 - y) * pitch;
+                    memcpy(row, a, pitch); memcpy(a, b, pitch); memcpy(b, row, pitch);
+                }
+                free(row);
+            }
+        }
+        return; /* Capture without presenting, title cards, or rule evaluation. */
+    }
+
     int w = 0, h = 0;
     SDL_GL_GetDrawableSize(g_win, &w, &h);
     if (w <= 0 || h <= 0) return;
@@ -562,8 +596,9 @@ static void video_refresh(const void *data, unsigned width, unsigned height, uns
 
     glUseProgram(0);
 
-    /* The card shares the fitted game viewport, never the surrounding bars. */
-    card_draw(view.x, view.y, view.w, view.h);
+    /* Window-relative overlay: core resolution/aspect never changes its size. */
+    glViewport(0, 0, w, h);
+    card_draw(0, 0, w, h);
 
     SDL_GL_SwapWindow(g_win);
 }
@@ -652,7 +687,7 @@ static void audio_deinit() {
 }
 
 static size_t audio_write(const int16_t *buf, unsigned frames) {
-    if (g_pcm)
+    if (g_pcm && !g_theatre)
         SDL_QueueAudio(g_pcm, buf, sizeof(*buf) * frames * 2);
     return frames;
 }
@@ -924,6 +959,10 @@ static void core_video_refresh(const void *data, unsigned width, unsigned height
 static void core_input_poll(void) {
 	int i;
     g_kbd = SDL_GetKeyboardState(NULL);
+    if (g_theatre) {
+        memset(g_joy, 0, sizeof g_joy);
+        return;
+    }
 
 	for (i = 0; g_binds[i].k || g_binds[i].rk; ++i)
         g_joy[g_binds[i].rk] = g_kbd[g_binds[i].k];
@@ -1083,6 +1122,10 @@ static bool core_load_game(const char *filename) {
 }
 
 static void core_unload() {
+    /* These function pointers belong to the library being unloaded. */
+    memset(&audio_callback, 0, sizeof audio_callback);
+    memset(&runloop_frame_time, 0, sizeof runloop_frame_time);
+    runloop_frame_time_last = 0;
 	g_game_loaded = false;
 	if (g_retro.initialized)
 		g_retro.retro_deinit();
@@ -1827,6 +1870,8 @@ static double      g_dynw[N_CHALLENGES];
 static char        g_cur_rom[4096] = "";
 static char        g_cur_core[4096] = "";
 static void        noop(void);
+static void        roll_begin(int winner);
+static void        process_events(void);
 static int         g_pending_switch = 0, g_pending_reset = 0;
 static uint64_t    g_switch_at = 0, g_reset_at = 0;
 static unsigned    g_switch_ms = 0, g_reset_ms = 0;
@@ -1848,13 +1893,14 @@ static int         g_nshadow = 0;
  */
 
 #define CARD_MS          5000  /* upstream's `challenge_text_timer = 5` */
-#define CARD_PAD_X       8     /* margin, framebuffer px */
-#define CARD_PAD_Y       4     /* plate padding, framebuffer px */
+#define CARD_SLIDE_MS    450
+#define CARD_PAD_X       8     /* margin, scaled drawable px */
+#define CARD_PAD_Y       4     /* plate padding, scaled drawable px */
 #define CARD_CELL_H      8
 #define CARD_CELL_MAX_W  8
 #define CARD_MAX_LINES   4     /* per plate */
 #define CARD_MAX_COLS    96
-/* The card's size, in multiples of the glyph scale the framebuffer maps to.
+/* The card's size, in multiples of the window-relative base glyph scale.
  * The plates are sized from their text, so this grows the bars with it. The
  * scale steps down from here when the window cannot hold the result. */
 #define CARD_SCALE_MULT  3
@@ -1869,7 +1915,7 @@ struct card_vert { float x, y, u, v; };
 static struct {
     GLuint vao, vbo, text;
     uint64_t armed_at;
-    int showing, dirty, win_w, win_h, fb_w, fb_h;
+    int showing, dirty, win_w, win_h, challenge;
     int top_h, bot_h, nv, title_verts;
 } g_card = { 0 };
 
@@ -2081,6 +2127,34 @@ static void card_layout_compute(int win_w, int win_h, int base, int scale,
             L->top_h + L->bot_h <= win_h;
 }
 
+/* Pick one window-relative scale for the entire challenge table, not one per
+ * core or objective. Thus authored text cannot make the bars jump on switches. */
+static void card_window_layout(int w, int h, const struct challenge *current,
+                               struct card_layout *L) {
+    int base = h / 240;
+    if (base < 1) base = 1;
+    for (int scale = base * CARD_SCALE_MULT; scale >= 1; scale--) {
+        int fits = 1;
+        for (size_t i = 0; i < sizeof challenges / sizeof challenges[0]; i++) {
+            const struct challenge *c = &challenges[i];
+            if (!c->game || !c->text || !c->text[0]) continue;
+            char meta[CARD_MAX_COLS];
+            snprintf(meta, sizeof meta, "%s - %s - %s", c->game->year,
+                     c->game->publisher, c->game->platform);
+            card_layout_compute(w, h, base, scale, c->game->title, meta, c->text, L);
+            if (!L->ok) { fits = 0; break; }
+        }
+        if (!fits) continue;
+        char meta[CARD_MAX_COLS];
+        snprintf(meta, sizeof meta, "%s - %s - %s", current->game->year,
+                 current->game->publisher, current->game->platform);
+        card_layout_compute(w, h, base, scale, current->game->title, meta,
+                            current->text, L);
+        return;
+    }
+    L->ok = 0;
+}
+
 /* Pixel-space matrix for the card's own pass. The vertex shader multiplies the
  * position as a row vector (`vec4(i_pos, 0, 1) * u_mvp`), so the matrix it
  * consumes is the transpose of the usual column-vector ortho: the translation
@@ -2178,8 +2252,6 @@ static void card_build(int win_w, int win_h, const struct card_layout *L) {
     glBindTexture(GL_TEXTURE_2D, 0);
     g_card.win_w = win_w;
     g_card.win_h = win_h;
-    g_card.fb_w = g_video.clip_w;
-    g_card.fb_h = g_video.clip_h;
     g_card.top_h = L->top_h;
     g_card.bot_h = L->bot_h;
     g_card.nv = rows * 6;
@@ -2187,47 +2259,43 @@ static void card_build(int win_w, int win_h, const struct card_layout *L) {
     g_card.dirty = 0;
 }
 
-static void card_draw(int x, int y, int win_w, int win_h) {
-    if (!g_card.showing) return;
-    if (SDL_GetTicks64() - g_card.armed_at >= CARD_MS) {
-        g_card.showing = 0;
-        return;
-    }
+/* Smoothstep, rounded to drawable pixels so bitmap text stays crisp. */
+static int card_slide_offset(uint64_t elapsed, int height) {
+    if (elapsed <= CARD_MS) return 0;
+    if (elapsed >= CARD_MS + CARD_SLIDE_MS) return height;
+    double t = (double)(elapsed - CARD_MS) / CARD_SLIDE_MS;
+    return (int)(height * t * t * (3 - 2 * t) + 0.5);
+}
+
+static void card_render(int challenge, uint64_t elapsed,
+                        int x, int y, int win_w, int win_h) {
+    const struct challenge *c = &challenges[challenge];
+    if (!c->game || !c->text || !c->text[0]) return;
     if (win_w < 32 || win_h < 32) return;
-    if (g_card.dirty || win_w != g_card.win_w || win_h != g_card.win_h ||
-        (int)g_video.clip_w != g_card.fb_w || (int)g_video.clip_h != g_card.fb_h) {
-        const struct challenge *c = &challenges[g_cur];
-        char meta[CARD_MAX_COLS];
+    if (g_card.dirty || g_card.challenge != challenge ||
+        win_w != g_card.win_w || win_h != g_card.win_h) {
         struct card_layout L;
-        int fb_w = g_video.clip_w ? (int)g_video.clip_w : 256;
-        int fb_h = g_video.clip_h ? (int)g_video.clip_h : 224;
-        int base = win_w / fb_w;
-        if (win_h / fb_h < base) base = win_h / fb_h;
-        if (base < 1) base = 1;
-        snprintf(meta, sizeof meta, "%s - %s - %s", c->game->year,
-                 c->game->publisher, c->game->platform);
-        for (int scale = base * CARD_SCALE_MULT; scale >= 1; scale--) {
-            card_layout_compute(win_w, win_h, base, scale, c->game->title,
-                                meta, c->text, &L);
-            if (L.ok) break;
-        }
+        card_window_layout(win_w, win_h, c, &L);
         if (!L.ok) return; /* No unclipped layout fits this window. */
         card_build(win_w, win_h, &L);
+        g_card.challenge = challenge;
     }
+    int top_offset = card_slide_offset(elapsed, g_card.top_h);
+    int bot_offset = card_slide_offset(elapsed, g_card.bot_h);
     GLfloat clear[4];
     glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
     glEnable(GL_SCISSOR_TEST);
     glClearColor(0, 0, 0, 1);
-    glScissor(x, y + win_h - g_card.top_h, win_w, g_card.top_h);
+    glScissor(x, y + win_h - g_card.top_h + top_offset,
+              win_w, g_card.top_h - top_offset);
     glClear(GL_COLOR_BUFFER_BIT);
-    glScissor(x, y, win_w, g_card.bot_h);
+    glScissor(x, y, win_w, g_card.bot_h - bot_offset);
     glClear(GL_COLOR_BUFFER_BIT);
     glDisable(GL_SCISSOR_TEST);
     glClearColor(clear[0], clear[1], clear[2], clear[3]);
     float m[4][4];
     card_ortho(win_w, win_h, m);
     glUseProgram(g_shader.program);
-    glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float *)m);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, g_card.text);
     glEnable(GL_BLEND);
@@ -2235,7 +2303,11 @@ static void card_draw(int x, int y, int win_w, int win_h) {
     glBindVertexArray(g_card.vao);
     glUniform4f(g_shader.u_tint, CARD_TITLE_COLOR[0], CARD_TITLE_COLOR[1],
                 CARD_TITLE_COLOR[2], 1);
+    m[1][3] = 1.0f + 2.0f * top_offset / win_h;
+    glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float *)m);
     glDrawArrays(GL_TRIANGLES, 0, g_card.title_verts);
+    m[1][3] = 1.0f - 2.0f * bot_offset / win_h;
+    glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float *)m);
     glUniform4f(g_shader.u_tint, CARD_TEXT_COLOR[0], CARD_TEXT_COLOR[1],
                 CARD_TEXT_COLOR[2], 1);
     glDrawArrays(GL_TRIANGLES, g_card.title_verts, g_card.nv - g_card.title_verts);
@@ -2245,6 +2317,16 @@ static void card_draw(int x, int y, int win_w, int win_h) {
     glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float *)g_game_mvp);
     glUniform4f(g_shader.u_tint, 1, 1, 1, 1);
     glUseProgram(0);
+}
+
+static void card_draw(int x, int y, int win_w, int win_h) {
+    if (!g_card.showing) return;
+    uint64_t elapsed = SDL_GetTicks64() - g_card.armed_at;
+    if (elapsed >= CARD_MS + CARD_SLIDE_MS) {
+        g_card.showing = 0;
+        return;
+    }
+    card_render(g_cur, elapsed, x, y, win_w, win_h);
 }
 
 /* Cached system RAM, refreshed once per evaluation. */
@@ -2596,21 +2678,15 @@ static void weights_reduce(int cur) {
     g_dynw[cur] = challenges[cur].weight * PLAYED_PENALTY;
 }
 
-static int select_next(int current) {
-    uint64_t now = SDL_GetTicks64();
+static int selection_eligible(int i, const int *excluded) {
+    return g_avail[i] && !challenges[i].interlude && (!excluded || !excluded[i]);
+}
 
-    /* Forced interlude (excluded from the random pool). */
-    for (int i = 0; i < N_CHALLENGES; i++) {
-        if (!g_avail[i] || !challenges[i].interlude)
-            continue;
-        if (now - g_last_interlude >= (uint64_t)(INTERLUDE_INTERVAL_S * 1000.0))
-            return i;
-        break;
-    }
-
+/* Shared weighted shuffle; preview exclusions never modify availability/weights. */
+static int select_random(int current, const int *excluded) {
     int n_pool = 0;
     for (int i = 0; i < N_CHALLENGES; i++)
-        if (g_avail[i] && !challenges[i].interlude)
+        if (selection_eligible(i, excluded))
             n_pool++;
     if (n_pool == 0)
         return -1;
@@ -2619,7 +2695,7 @@ static int select_next(int current) {
     for (int attempt = 0; attempt < 8; attempt++) {
         double total = 0;
         for (int i = 0; i < N_CHALLENGES; i++)
-            if (g_avail[i] && !challenges[i].interlude)
+            if (selection_eligible(i, excluded))
                 total += g_dynw[i];
         if (total <= 0.0)
             return -1;
@@ -2627,7 +2703,7 @@ static int select_next(int current) {
         double cum = 0.0;
         next = current;
         for (int i = 0; i < N_CHALLENGES; i++) {
-            if (!g_avail[i] || challenges[i].interlude)
+            if (!selection_eligible(i, excluded))
                 continue;
             cum += g_dynw[i];
             if (pick <= cum) {
@@ -2644,13 +2720,25 @@ static int select_next(int current) {
          * always changes something. */
         for (int k = 1; k <= N_CHALLENGES; k++) {
             int i = (current + k) % N_CHALLENGES;
-            if (g_avail[i] && !challenges[i].interlude) {
+            if (selection_eligible(i, excluded)) {
                 next = i;
                 break;
             }
         }
     }
     return next;
+}
+
+static int select_next(int current) {
+    uint64_t now = SDL_GetTicks64();
+    /* Only real selections can force the periodic interlude. */
+    for (int i = 0; i < N_CHALLENGES; i++) {
+        if (!g_avail[i] || !challenges[i].interlude) continue;
+        if (now - g_last_interlude >= (uint64_t)(INTERLUDE_INTERVAL_S * 1000.0))
+            return i;
+        break;
+    }
+    return select_random(current, NULL);
 }
 
 /* Load challenge i: ROM (swap if different), state, scratch state. Returns 0
@@ -2722,20 +2810,412 @@ static int load_challenge(int i) {
     return 1;
 }
 
-/* Reload the current challenge's state (ACT_RESET). Also clears the
- * per-challenge scratch, as Lua's `reset()` clears the whole state table. */
+/* ACT_RESET reserves the current challenge; load_challenge() reloads its state
+ * and clears per-challenge scratch once the reel lands. */
 static void reload_current_state(void) {
-    const struct challenge *c = &challenges[g_cur];
-    char stbuf[4096];
-    const char *st = data_path(c->state, stbuf, sizeof(stbuf));
-    if (!st)
-        return;
-    core_load_state(st);
-    g_latch = 0;
-    memset(g_stable, 0, sizeof(g_stable));
-    ram_refresh();
-    refresh_shadows();
-    card_begin();
+    g_pending_reset = 0; /* Consume once, not another roll on every frame. */
+    roll_begin(g_cur);
+}
+
+/* --- Cached opening frames and theatrical challenge reel ------------------- */
+#define ROLL_CUT    0
+#define ROLL_SCROLL 1
+#ifndef ROLL_STYLE
+#define ROLL_STYLE ROLL_SCROLL /* Set to ROLL_CUT and rebuild to compare. */
+#endif
+#define ROLL_MS       2500
+#define ROLL_PAUSE_MS 250
+#define ROLL_PREVIEWS  20
+
+static struct {
+    GLuint texture;
+    float aspect;
+    int width, height, tex_w, tex_h;
+} g_previews[N_CHALLENGES];
+static struct {
+    int active, count, sequence[ROLL_PREVIEWS + 1], landed;
+    uint64_t started_at, landed_at;
+    GLuint vao, vbo, fbo;
+    int w, h;
+    struct { GLuint texture; int challenge; } scene[2];
+} g_roll;
+
+static void preview_paths(int i, char *bmp, char *info) {
+    /* Slugs are not unique: multiple levels of a game share one. Key by state. */
+    const char *name = strrchr(challenges[i].state, '/');
+    name = name ? name + 1 : challenges[i].state;
+    char rel[512];
+    snprintf(rel, sizeof rel, "previews/%s-opening-v2.bmp", name);
+    data_path(rel, bmp, 4096);
+    if (!g_exe_dir[0]) snprintf(bmp, 4096, "%s", rel);
+    snprintf(rel, sizeof rel, "previews/%s-opening-v2.txt", name);
+    data_path(rel, info, 4096);
+    if (!g_exe_dir[0]) snprintf(info, 4096, "%s", rel);
+}
+
+/* Invalidate when the ROM, savestate or core changes; the version is in the name.
+ * ponytail: mtime freshness; hash inputs if preserved/rolled-back timestamps matter. */
+static int preview_fresh(int i, const char *bmp, const char *info, float *aspect) {
+    struct stat cache, source;
+    if (stat(bmp, &cache) != 0) return 0;
+    char rom[4096], state[4096], core[4096];
+    data_path(challenges[i].rom, rom, sizeof rom);
+    data_path(challenges[i].state, state, sizeof state);
+    if (!core_for_state(state, core, sizeof core)) return 0;
+    const char *paths[] = {rom, state, core};
+    for (int p = 0; p < 3; p++)
+        if (stat(paths[p], &source) != 0 || source.st_mtime > cache.st_mtime) return 0;
+    FILE *f = fopen(info, "r");
+    if (!f) return 0;
+    int ok = fscanf(f, "%f %d %d", aspect, &g_previews[i].tex_w,
+                    &g_previews[i].tex_h) == 3 && isfinite(*aspect) && *aspect > 0 &&
+             g_previews[i].tex_w > 0 && g_previews[i].tex_w <= 8192 &&
+             g_previews[i].tex_h > 0 && g_previews[i].tex_h <= 8192;
+    fclose(f);
+    return ok;
+}
+
+static void preview_upload(int i, SDL_Surface *surface, float aspect) {
+    SDL_Surface *rgba = SDL_ConvertSurfaceFormat(surface, SDL_PIXELFORMAT_RGBA32, 0);
+    if (!rgba) die("Cannot convert preview: %s", SDL_GetError());
+    glGenTextures(1, &g_previews[i].texture);
+    glBindTexture(GL_TEXTURE_2D, g_previews[i].texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    GLint row_length, alignment;
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row_length);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, rgba->pitch / 4);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, g_previews[i].tex_w, g_previews[i].tex_h,
+                 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, rgba->w, rgba->h,
+                    GL_RGBA, GL_UNSIGNED_BYTE, rgba->pixels);
+    g_previews[i].width = rgba->w;
+    g_previews[i].height = rgba->h;
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, row_length);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    SDL_FreeSurface(rgba);
+    g_previews[i].aspect = aspect;
+}
+
+static void previews_prepare(void) {
+    char dir[4096];
+    data_path("previews", dir, sizeof dir);
+    if (!g_exe_dir[0]) snprintf(dir, sizeof dir, "previews");
+    mkdir(dir, 0755); /* An unwritable cache still works in memory for this run. */
+    g_theatre = g_preview_warming = 1;
+    if (g_pcm) SDL_ClearQueuedAudio(g_pcm);
+    for (int i = 0; i < N_CHALLENGES && running; i++) {
+        if (!g_avail[i]) continue;
+        process_events();
+        if (!running) break;
+        char bmp[4096], info[4096];
+        preview_paths(i, bmp, info);
+        float aspect = 0;
+        SDL_Surface *surface = preview_fresh(i, bmp, info, &aspect) ? SDL_LoadBMP(bmp) : NULL;
+        if (surface && (surface->w > g_previews[i].tex_w || surface->h > g_previews[i].tex_h)) {
+            SDL_FreeSurface(surface); surface = NULL;
+        }
+        if (!surface) {
+            printf("[reel] capturing %s\n", challenges[i].name);
+            if (!load_challenge(i)) { g_avail[i] = 0; continue; }
+            /* Wait for the first actual video frame, not a NULL duplicate. No
+             * rules run here, and controller input and core audio are muted. */
+            for (int frame = 0; frame < 120 && !g_preview_capture && running; frame++) {
+                process_events();
+                if (!running) break;
+                if (runloop_frame_time.callback)
+                    runloop_frame_time.callback(runloop_frame_time.reference);
+                g_retro.retro_run();
+            }
+            surface = g_preview_capture;
+            g_preview_capture = NULL;
+            if (!surface) {
+                fprintf(stderr, "[reel] no opening frame for %s\n", challenges[i].name);
+                g_avail[i] = 0;
+                continue;
+            }
+            aspect = g_video.aspect_ratio > 0 ? g_video.aspect_ratio
+                                             : (float)surface->w / surface->h;
+            g_previews[i].tex_w = g_video.tex_w;
+            g_previews[i].tex_h = g_video.tex_h;
+            if (SDL_SaveBMP(surface, bmp) < 0) {
+                fprintf(stderr, "[reel] cannot cache %s: %s\n", bmp, SDL_GetError());
+            } else {
+                FILE *f = fopen(info, "w");
+                if (f) {
+                    fprintf(f, "%.9g %d %d\n", aspect, g_previews[i].tex_w, g_previews[i].tex_h);
+                    fclose(f);
+                }
+                else fprintf(stderr, "[reel] cannot cache aspect for %s\n", challenges[i].slug);
+            }
+        }
+        preview_upload(i, surface, aspect);
+        SDL_FreeSurface(surface);
+    }
+    g_preview_warming = 0;
+}
+
+/* Reserve the winner, sample previews without replacement using the same
+ * weighted policy, then append the winner. No play/recency state is changed. */
+static int roll_sequence(int winner, int sequence[ROLL_PREVIEWS + 1]) {
+    int excluded[N_CHALLENGES] = {0}, count = 0;
+    excluded[winner] = 1;
+    while (count < ROLL_PREVIEWS) {
+        int next = select_random(-1, excluded);
+        if (next < 0) break;
+        sequence[count++] = next;
+        excluded[next] = 1;
+    }
+    sequence[count++] = winner;
+    return count;
+}
+
+/* A minimum beat followed by increasingly long dwell times: rrrrr -> tic tic. */
+static unsigned roll_boundary(int step, int previews) {
+    if (!previews) return ROLL_MS;
+    double x = (double)step / previews;
+    return (unsigned)(ROLL_MS * (0.28 * x + 0.72 * x * x * x) + 0.5);
+}
+
+static void roll_begin(int winner) {
+    g_theatre = g_roll.active = 1;
+    g_roll.landed = 0;
+    g_roll.count = roll_sequence(winner, g_roll.sequence);
+    g_roll.started_at = SDL_GetTicks64();
+    g_roll.scene[0].challenge = g_roll.scene[1].challenge = -1;
+    g_pending_switch = g_pending_reset = g_force_switch = 0;
+    if (g_pcm) SDL_ClearQueuedAudio(g_pcm);
+    printf("[reel] %d previews -> %s\n", g_roll.count - 1, challenges[winner].name);
+}
+
+#if ROLL_STYLE == ROLL_SCROLL
+static void roll_quad(GLuint texture, int y) {
+    int x = 0, w = g_roll.w, h = g_roll.h;
+    float v0 = 1, v1 = 0;
+    const struct card_vert vertices[6] = {
+        {x,y,0,v0}, {x+w,y,1,v0}, {x,y+h,0,v1},
+        {x+w,y,1,v0}, {x+w,y+h,1,v1}, {x,y+h,0,v1}
+    };
+    float m[4][4];
+    card_ortho(g_roll.w, g_roll.h, m);
+    glUseProgram(g_shader.program);
+    glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float *)m);
+    glUniform4f(g_shader.u_tint, 1, 1, 1, 1);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glBindVertexArray(g_roll.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, g_roll.vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof vertices, vertices, GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glUseProgram(0);
+}
+
+#endif
+
+static void roll_resize(int w, int h) {
+    if (!g_roll.vao) {
+        glGenVertexArrays(1, &g_roll.vao);
+        glGenBuffers(1, &g_roll.vbo);
+#if ROLL_STYLE == ROLL_SCROLL
+        glGenFramebuffers(1, &g_roll.fbo);
+#endif
+        glBindVertexArray(g_roll.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, g_roll.vbo);
+        glEnableVertexAttribArray(g_shader.i_pos);
+        glEnableVertexAttribArray(g_shader.i_coord);
+        glVertexAttribPointer(g_shader.i_pos, 2, GL_FLOAT, GL_FALSE,
+                              sizeof(struct card_vert), (void *)0);
+        glVertexAttribPointer(g_shader.i_coord, 2, GL_FLOAT, GL_FALSE,
+                              sizeof(struct card_vert), (void *)(2 * sizeof(float)));
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+    if (w == g_roll.w && h == g_roll.h) return;
+    g_roll.w = w; g_roll.h = h;
+#if ROLL_STYLE == ROLL_SCROLL
+    /* Only two full-window composite textures, even at 4K. */
+    for (int s = 0; s < 2; s++) {
+        if (!g_roll.scene[s].texture) glGenTextures(1, &g_roll.scene[s].texture);
+        glBindTexture(GL_TEXTURE_2D, g_roll.scene[s].texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        g_roll.scene[s].challenge = -1;
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+#endif
+}
+
+/* Match the live quad's texture bounds and viewport exactly, including its
+ * padded native texture. This avoids a one-pixel sampling jump on landing. */
+static void roll_game_frame(int challenge) {
+    float right = (float)g_previews[challenge].width / g_previews[challenge].tex_w;
+    float bottom = (float)g_previews[challenge].height / g_previews[challenge].tex_h;
+    const struct card_vert vertices[4] = {
+        {-1,-1,0,bottom}, {-1,1,0,0}, {1,-1,right,bottom}, {1,1,right,0}
+    };
+    float m[4][4];
+    ortho2d(m, -1, 1, -1, 1);
+    glUseProgram(g_shader.program);
+    glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float *)m);
+    glUniform4f(g_shader.u_tint, 1, 1, 1, 1);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_previews[challenge].texture);
+    glBindVertexArray(g_roll.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, g_roll.vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof vertices, vertices, GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glUseProgram(0);
+}
+
+static void roll_paint(int challenge) {
+    glViewport(0, 0, g_roll.w, g_roll.h);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    double aspect = g_previews[challenge].aspect;
+    int w = g_roll.w, h = g_roll.h;
+    if (w > h * aspect) w = (int)(h * aspect + 0.5);
+    else h = (int)(w / aspect + 0.5);
+    glViewport((g_roll.w-w)/2, (g_roll.h-h)/2, w, h);
+    roll_game_frame(challenge);
+    glViewport(0, 0, g_roll.w, g_roll.h);
+    card_render(challenge, 0, 0, 0, g_roll.w, g_roll.h);
+}
+
+#if ROLL_STYLE == ROLL_SCROLL
+static GLuint roll_scene(int challenge) {
+    for (int s = 0; s < 2; s++)
+        if (g_roll.scene[s].challenge == challenge) return g_roll.scene[s].texture;
+    /* The caller pins the current scene in slot 0; build its successor in 1. */
+    int slot = g_roll.scene[0].challenge < 0 ? 0 : 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, g_roll.fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                          g_roll.scene[slot].texture, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        die("Incomplete reel framebuffer");
+    roll_paint(challenge);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    g_roll.scene[slot].challenge = challenge;
+    return g_roll.scene[slot].texture;
+}
+
+#endif
+
+static void roll_draw(uint64_t elapsed) {
+    int w, h;
+    SDL_GL_GetDrawableSize(g_win, &w, &h);
+    if (w <= 0 || h <= 0) return;
+    roll_resize(w, h);
+    int previews = g_roll.count - 1, step = 0;
+    while (step < previews && elapsed >= roll_boundary(step + 1, previews)) step++;
+    int current = g_roll.sequence[step];
+    /* Retain the current composite while replacing the other scene. */
+    if (g_roll.scene[1].challenge == current) {
+        GLuint texture = g_roll.scene[0].texture;
+        int challenge = g_roll.scene[0].challenge;
+        g_roll.scene[0] = g_roll.scene[1];
+        g_roll.scene[1].texture = texture;
+        g_roll.scene[1].challenge = challenge;
+    } else if (g_roll.scene[0].challenge != current) {
+        g_roll.scene[0].challenge = -1;
+    }
+#if ROLL_STYLE == ROLL_SCROLL
+    if (step < previews) {
+        GLuint first = roll_scene(current);
+        int offset;
+        unsigned begin = roll_boundary(step, previews), end = roll_boundary(step + 1, previews);
+        double t = (double)(elapsed - begin) / (end - begin);
+        offset = (int)(h * t * t * (3 - 2 * t) + 0.5);
+        GLuint second = roll_scene(g_roll.sequence[step + 1]);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, w, h);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_BLEND);
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        roll_quad(first, -offset);
+        roll_quad(second, h-offset);
+    } else
+#endif
+    {
+        /* Direct rendering at rest matches live sampling exactly; no extra
+         * framebuffer pass on the final landing (or in hard-cut mode). */
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        roll_paint(current);
+    }
+    /* Preserve the game's shared shader state for the eventual live frame. */
+    glUseProgram(g_shader.program);
+    glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float *)g_game_mvp);
+    glUniform4f(g_shader.u_tint, 1, 1, 1, 1);
+    glUseProgram(0);
+    SDL_GL_SwapWindow(g_win);
+}
+
+static void roll_chime(void) {
+    if (!g_pcm || g_pcm_rate <= 0) return;
+    /* A quiet two-note landing bell; no assets or new audio dependency. */
+    int frames = g_pcm_rate * 180 / 1000;
+    int16_t *samples = malloc(frames * 2 * sizeof *samples);
+    if (!samples) return;
+    for (int i = 0; i < frames; i++) {
+        double t = (double)i / g_pcm_rate, envelope = 1.0 - (double)i / frames;
+        double attack = t < 0.005 ? t / 0.005 : 1;
+        double wave = sin(2 * M_PI * 880 * t) + 0.5 * sin(2 * M_PI * 1320 * t);
+        samples[i*2] = samples[i*2+1] = (int16_t)(3500 * wave * envelope * envelope * attack);
+    }
+    SDL_ClearQueuedAudio(g_pcm);
+    SDL_QueueAudio(g_pcm, samples, frames * 2 * sizeof *samples);
+    free(samples);
+}
+
+static void roll_tick(void) {
+    uint64_t elapsed = SDL_GetTicks64() - g_roll.started_at;
+    if (elapsed >= ROLL_MS && !g_roll.landed) {
+        int winner = g_roll.sequence[g_roll.count-1];
+        if (!load_challenge(winner)) {
+            g_avail[winner] = 0;
+            int next = select_next(g_cur);
+            if (next < 0) { running = false; return; }
+            roll_begin(next);
+            return;
+        }
+        g_roll.landed = 1;
+        g_roll.landed_at = SDL_GetTicks64();
+        roll_chime();
+    }
+    roll_draw(elapsed);
+    if (g_roll.landed && SDL_GetTicks64() - g_roll.landed_at >= ROLL_PAUSE_MS) {
+        g_roll.active = g_theatre = 0;
+        if (g_pcm) SDL_ClearQueuedAudio(g_pcm);
+        g_last_frame = runloop_frame_time_last = 0;
+        card_begin(); /* Five seconds of actual play, not time spent in the reel. */
+    }
+    SDL_Delay(1);
+}
+
+static void previews_deinit(void) {
+    for (int i = 0; i < N_CHALLENGES; i++)
+        if (g_previews[i].texture) glDeleteTextures(1, &g_previews[i].texture);
+    for (int s = 0; s < 2; s++)
+        if (g_roll.scene[s].texture) glDeleteTextures(1, &g_roll.scene[s].texture);
+    if (g_roll.fbo) glDeleteFramebuffers(1, &g_roll.fbo);
+    if (g_roll.vbo) glDeleteBuffers(1, &g_roll.vbo);
+    if (g_roll.vao) glDeleteVertexArrays(1, &g_roll.vao);
 }
 
 static void do_switch(void) {
@@ -2751,8 +3231,10 @@ static void do_switch(void) {
         int next = select_next(g_cur);
         if (next < 0)
             break;
-        if (load_challenge(next))
+        if (g_previews[next].texture) {
+            roll_begin(next);
             return;
+        }
         g_avail[next] = 0;
         g_dynw[next] = 0.0;
     }
@@ -2796,6 +3278,34 @@ static int match_challenge(const char *want) {
 
 static void noop() {}
 
+static void process_events(void) {
+    SDL_Event ev;
+    while (SDL_PollEvent(&ev)) {
+        switch (ev.type) {
+        case SDL_QUIT: running = false; break;
+        case SDL_KEYDOWN:
+            if (ev.key.keysym.scancode == SDL_SCANCODE_ESCAPE) running = false;
+            if (ev.key.repeat) break;
+            if (ev.key.keysym.scancode == SDL_SCANCODE_F9 && !g_theatre)
+                save_state_to_disk();
+            if (ev.key.keysym.scancode == SDL_SCANCODE_F) {
+                Uint32 flags = SDL_GetWindowFlags(g_win) & SDL_WINDOW_FULLSCREEN
+                               ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP;
+                if (SDL_SetWindowFullscreen(g_win, flags) < 0)
+                    fprintf(stderr, "[video] fullscreen toggle failed: %s\n", SDL_GetError());
+            }
+            if (ev.key.keysym.scancode == SDL_SCANCODE_T && !g_theatre) {
+                g_force_switch = 1;
+                printf("[engine] force switch requested (T)\n");
+            }
+            break;
+        case SDL_WINDOWEVENT:
+            if (ev.window.event == SDL_WINDOWEVENT_CLOSE) running = false;
+            break;
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
     /* Optional single argument: the challenge to start with (name or slug, case
      * insensitive). Cores are chosen per challenge, so no core is passed here. */
@@ -2829,17 +3339,28 @@ int main(int argc, char *argv[]) {
         start = select_next(0);
     if (start < 0)
         die("no challenge is loadable: no ROM/state/core present");
+    g_theatre = g_preview_warming = 1;
     if (!load_challenge(start))
         die("failed to load first challenge: %s", challenges[start].name);
+    previews_prepare();
+    if (running) {
+        if (!g_avail[start]) die("cannot capture first challenge: %s", challenges[start].name);
+        roll_begin(start);
+    }
 
     printf("Controls: F fullscreen | F9 save state | T force switch | ESC quit\n");
     printf("The engine picks the next challenge at random (weighted); the\n");
     printf("Super Mario World interlude is forced every %.0fs.\n\n",
            INTERLUDE_INTERVAL_S);
 
-    SDL_Event ev;
-
     while (running) {
+        process_events();
+        if (!running) break;
+        if (g_roll.active) {
+            roll_tick();
+            continue; /* No rules, simulation, or core audio during the theatre. */
+        }
+
         // Update the game loop timer.
         if (runloop_frame_time.callback) {
             retro_time_t current = cpu_features_get_time_usec();
@@ -2854,30 +3375,6 @@ int main(int argc, char *argv[]) {
         // Ask the core to emit the audio.
         if (audio_callback.callback) {
             audio_callback.callback();
-        }
-
-        while (SDL_PollEvent(&ev)) {
-            switch (ev.type) {
-            case SDL_QUIT: running = false; break;
-            case SDL_KEYDOWN:
-                if (!ev.key.repeat && ev.key.keysym.scancode == SDL_SCANCODE_F9)
-                    save_state_to_disk();
-                if (!ev.key.repeat && ev.key.keysym.scancode == SDL_SCANCODE_F) {
-                    Uint32 flags = SDL_GetWindowFlags(g_win) & SDL_WINDOW_FULLSCREEN
-                                   ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP;
-                    if (SDL_SetWindowFullscreen(g_win, flags) < 0)
-                        fprintf(stderr, "[video] fullscreen toggle failed: %s\n", SDL_GetError());
-                }
-                if (!ev.key.repeat && ev.key.keysym.scancode == SDL_SCANCODE_T) {
-                    g_force_switch = 1;
-                    printf("[engine] force switch requested (T)\n");
-                }
-                break;
-            case SDL_WINDOWEVENT:
-                if (ev.window.event == SDL_WINDOWEVENT_CLOSE)
-                    running = false;
-                break;
-            }
         }
 
         // Frame-rate limiter: cap to the core's nominal fps so the game runs at
@@ -2918,12 +3415,14 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        if (g_roll.active) continue;
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		g_retro.retro_run();
 	}
 
 	core_unload();
 	audio_deinit();
+    previews_deinit();
 	video_deinit();
 
     if (g_vars) {

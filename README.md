@@ -33,6 +33,9 @@ game_data/
   converted/   this port's converted savestates, not BizHawk .State files
 ```
 
+`previews/` next to the executable contains the bundled opening-frame BMPs and geometry
+metadata. Missing previews are generated there automatically.
+
 ## Run
 
 ```
@@ -68,8 +71,43 @@ width/height ratio when the core supplies none). Unused space is black. Core swi
 runtime geometry changes never resize the window.
 
 `F` toggles desktop fullscreen without changing the monitor's resolution. Leaving fullscreen
-restores the 960×720 window; switching cores preserves fullscreen. Title cards remain inside
-the fitted game image, not over the surrounding black bars.
+restores the 960×720 window; switching cores preserves fullscreen. Title cards span the
+window, with bar and text sizes shared across all cores and challenges.
+
+## Challenge reel
+
+Every entry (cold start, ordinary switch, `T`, or rule-driven reset) rolls through cached
+opening frames and their matching title cards. The existing weighted shuffle reserves the
+winner first; up to 20 other available non-interlude challenges are sampled with the same
+weights, without replacement. Preview picks never alter recency weights. The interlude
+remains outside the random pool and can still be selected as the actual winner.
+
+The reel slows over **2.5 seconds**, then holds the winner for **250 ms** with a quiet landing
+bell. Gameplay, rules and core audio are stopped during this theatre; `F` and `ESC` still work.
+The winner's real savestate is loaded once at landing, and its title-card timer starts again
+when live play resumes. Blank-text challenges still have no title card.
+
+To compare styles, change this definition in `sdlarch.c` and run `make`:
+
+```c
+#define ROLL_STYLE ROLL_SCROLL  /* vertical reel; default */
+// #define ROLL_STYLE ROLL_CUT  /* hard-cut succession */
+```
+
+Missing or stale previews are captured before the run using the real ROM/core/savestate,
+with neutral input, muted audio and no rule evaluation. Later launches reuse them. The cache
+is keyed by savestate (slugs are shared by several levels); newer ROM/state/core mtimes
+invalidate it. Delete `previews/` to regenerate everything. If the cache directory
+is unwritable, previews still work in memory for that run.
+
+The small presentation regression check is runnable with:
+
+```sh
+make
+cc $(pkg-config --cflags sdl2) tests/title-card.c build/glad.o \
+  build/vendor/SDL2_gfx/*.o $(pkg-config --libs sdl2) -lm -o /tmp/title-card-test
+/tmp/title-card-test
+```
 
 ## Controls
 

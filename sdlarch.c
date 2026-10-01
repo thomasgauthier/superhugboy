@@ -1868,8 +1868,12 @@ static int         g_nshadow = 0;
 #define CARD_GLYPH_W     5     /* glyph box inside an 8x8 atlas cell */
 #define CARD_CELL_MIN_W  6     /* narrow cell: 5 px glyph + 1 px gap */
 #define CARD_CELL_MAX_W  8
-#define CARD_MAX_LINES   3     /* per plate */
+#define CARD_MAX_LINES   4     /* per plate */
 #define CARD_MAX_COLS    96
+/* The card's size, in multiples of the glyph scale the framebuffer maps to.
+ * The plates are sized from their text, so this grows the bars with it. The
+ * scale steps down from here when the window cannot hold the result. */
+#define CARD_SCALE_MULT  3
 #define CARD_ATLAS_CELL  8
 #define CARD_ATLAS_COLS  16
 #define CARD_ATLAS_W     (CARD_ATLAS_COLS * CARD_ATLAS_CELL)
@@ -2061,8 +2065,11 @@ static void card_init_gl(void) {
 }
 
 /* Uppercase, drop what the atlas cannot draw, and greedily wrap `src` into at
- * most `max` lines of `cols` columns. Returns the number of lines written. */
-static int card_paragraph(const char *src, int cols, char out[][CARD_MAX_COLS], int max) {
+ * most `max` lines of `cols` columns. Returns the number of lines written.
+ * Sets *truncated when the plate was too small to show every word, which the
+ * caller treats as "this scale does not fit". */
+static int card_paragraph(const char *src, int cols, char out[][CARD_MAX_COLS], int max,
+                          int *truncated) {
     int line = 0;
     size_t len = 0;
 
@@ -2098,11 +2105,23 @@ static int card_paragraph(const char *src, int cols, char out[][CARD_MAX_COLS], 
         }
         if (!wlen)
             continue;
-        if (wlen > (size_t)cols)
+        if (wlen > (size_t)cols) {
+            /* A word this plate cannot hold at all: no number of lines saves
+             * it, so the layout has to shrink. Cut it rather than overrun. */
+            *truncated = 1;
             wlen = (size_t)cols;
+        }
         if (len && len + 1 + wlen > (size_t)cols) {
-            if (line + 1 >= max)
+            if (line + 1 >= max) {
+                *truncated = 1;
                 break;
+            }
+            /* The break already separates the fields, so a separator left
+             * dangling at the end of the line only reads as a typo. */
+            if (len >= 2 && out[line][len - 1] == '-' && out[line][len - 2] == ' ') {
+                len -= 2;
+                out[line][len] = '\0';
+            }
             line++;
             out[line][0] = '\0';
             len = 0;
@@ -2114,7 +2133,113 @@ static int card_paragraph(const char *src, int cols, char out[][CARD_MAX_COLS], 
         out[line][len] = '\0';
     }
 
+    /* Greedy filling can strand one short word on the last line ("STREETS OF
+     * RAGE" / "2"). Pull the previous line's last word down, but only when that
+     * leaves a readable line behind — never one ending in a bare separator. */
+    if (line >= 1) {
+        char *prev = out[line - 1];
+        char *last = out[line];
+        size_t plen = strlen(prev), llen = strlen(last), cut = plen;
+
+        while (cut > 0 && prev[cut - 1] != ' ')
+            cut--;
+        if (cut > 0 && llen * 2 < plen && cut - 1 >= 4 &&
+            prev[cut - 2] != '-' && llen + plen - cut + 1 <= (size_t)cols) {
+            char merged[CARD_MAX_COLS];
+            snprintf(merged, sizeof merged, "%s %s", prev + cut, last);
+            prev[cut - 1] = '\0';
+            memcpy(last, merged, strlen(merged) + 1);
+        }
+    }
+
     return line + 1;
+}
+
+/* Longest run of printing characters in s, as the wrapper sees it. A line can
+ * always be wrapped; a single word cannot, so this is the floor on columns. */
+static int card_longest_word(const char *s) {
+    int best = 1, run = 0;
+    for (; *s; s++) {
+        char ch = *s;
+        if (ch >= 'a' && ch <= 'z')
+            ch -= 'a' - 'A';
+        if (ch == ' ') {
+            run = 0;   /* only a space ends a word */
+        } else if (ch >= CARD_FIRST_CHAR && ch <= CARD_LAST_CHAR) {
+            if (++run > best)
+                best = run;
+        }
+        /* Anything the atlas cannot draw is dropped without breaking the word. */
+    }
+    return best;
+}
+
+/* What the card is before anything is drawn: the cell and scale that fit, the
+ * wrapped lines, and the plate heights that follow from them. */
+struct card_layout {
+    int  cell_w, scale, cols, line_h, pad_y;
+    int  ntop, nbot, top_h, bot_h;
+    int  ok;                  /* every word shown, both plates inside the window */
+    char top[CARD_MAX_LINES][CARD_MAX_COLS];
+    char bot[CARD_MAX_LINES][CARD_MAX_COLS];
+};
+
+/* Lay the card out at one glyph scale. The text is measured in window pixels,
+ * because that is where it lands, so a scale too large for the window is
+ * reported through `ok` rather than drawn off the edge. */
+static void card_layout_compute(int win_w, int win_h, int scale, const char *title,
+                                const char *meta, const char *text,
+                                struct card_layout *L) {
+    int wm, wt, word, cols, truncated = 0;
+    int room = win_w - 2 * CARD_PAD_X * scale;
+    size_t longest = strlen(title);
+
+    memset(L, 0, sizeof *L);
+    L->scale = scale;
+    if (strlen(meta) > longest)
+        longest = strlen(meta);
+    if (strlen(text) > longest)
+        longest = strlen(text);
+
+    /* Largest cell at which every authored line still fits whole. */
+    L->cell_w = CARD_CELL_MIN_W;
+    if ((int)longest <= room / (CARD_CELL_MAX_W * scale))
+        L->cell_w = CARD_CELL_MAX_W;
+    cols = room / (L->cell_w * scale);
+
+    /* A word longer than a line can never be shown, whatever the wrapping does,
+     * so that alone rules the wider cell out. */
+    word = card_longest_word(title);
+    wm = card_longest_word(meta);
+    wt = card_longest_word(text);
+    if (wm > word)
+        word = wm;
+    if (wt > word)
+        word = wt;
+
+    if (cols < word && L->cell_w == CARD_CELL_MAX_W) {
+        L->cell_w = CARD_CELL_MIN_W;
+        cols = room / (L->cell_w * scale);
+    }
+    if (cols > CARD_MAX_COLS - 1)
+        cols = CARD_MAX_COLS - 1;
+    if (cols < word || cols < 1) {
+        L->cols = 1;
+        return;                          /* ok stays 0: shrink further */
+    }
+
+    L->cols = cols;
+    L->ntop = card_paragraph(title, cols, L->top, CARD_MAX_LINES, &truncated);
+    if (L->ntop < CARD_MAX_LINES)
+        L->ntop += card_paragraph(meta, cols, L->top + L->ntop,
+                                  CARD_MAX_LINES - L->ntop, &truncated);
+    L->nbot = card_paragraph(text, cols, L->bot, CARD_MAX_LINES, &truncated);
+
+    L->line_h = CARD_CELL_H * scale;
+    L->pad_y  = CARD_PAD_Y * scale;
+    L->top_h  = L->ntop * L->line_h + 2 * L->pad_y;
+    L->bot_h  = L->nbot * L->line_h + 2 * L->pad_y;
+    L->ok = !truncated && L->top_h + L->bot_h <= win_h;
 }
 
 /* Pixel-space matrix for the card's own pass. The vertex shader multiplies the
@@ -2173,15 +2298,13 @@ static void card_emit_line(const char *line, int cell_w, int scale, int win_w, i
 /* The two plates plus their text, over the frame the game just produced. */
 static void card_draw(int win_w, int win_h) {
     const struct challenge *c;
+    struct card_layout L;
     char meta[CARD_MAX_COLS];
-    char top[CARD_MAX_LINES][CARD_MAX_COLS];
-    char bot[CARD_MAX_LINES][CARD_MAX_COLS];
     GLfloat clear[4];
     float m[4][4];
     struct card_vert *v;
-    int fb_w, fb_h, cell_w, cols, ntop, nbot, scale, line_h, pad_y, top_h, bot_h;
+    int fb_w, fb_h, base, scale;
     int nv = 0, title_verts = 0;
-    size_t longest;
 
     if (!g_card.showing)
         return;
@@ -2198,52 +2321,35 @@ static void card_draw(int win_w, int win_h) {
     snprintf(meta, sizeof meta, "%s - %s - %s", c->game->year,
              c->game->publisher, c->game->platform);
 
-    /* The core's own width decides the cell: the largest at which every line
-     * still fits is the one used, so the type stays as big as it can be. */
+    /* Integer, square-pixel scale: the card never antialiases or stretches.
+     * Start at the requested multiple of the framebuffer's own scale, then step
+     * down until the window can hold the result. */
     fb_w = g_video.clip_w > 0 ? (int)g_video.clip_w : 256;
     fb_h = g_video.clip_h > 0 ? (int)g_video.clip_h : 224;
-    longest = strlen(c->text);
-    if (strlen(c->game->title) > longest)
-        longest = strlen(c->game->title);
-    if (strlen(meta) > longest)
-        longest = strlen(meta);
-    cell_w = CARD_CELL_MIN_W;
-    if ((int)longest <= (fb_w - 2 * CARD_PAD_X) / CARD_CELL_MAX_W)
-        cell_w = CARD_CELL_MAX_W;
-    cols = (fb_w - 2 * CARD_PAD_X) / cell_w;
-    if (cols > CARD_MAX_COLS - 1)
-        cols = CARD_MAX_COLS - 1;
-    if (cols < 1)
-        cols = 1;
+    base = win_w / fb_w;
+    if (win_h / fb_h < base)
+        base = win_h / fb_h;
+    if (base < 1)
+        base = 1;
 
-    ntop = card_paragraph(c->game->title, cols, top, CARD_MAX_LINES);
-    if (ntop < CARD_MAX_LINES)
-        ntop += card_paragraph(meta, cols, top + ntop, CARD_MAX_LINES - ntop);
-    nbot = card_paragraph(c->text, cols, bot, CARD_MAX_LINES);
+    scale = base * CARD_SCALE_MULT;
+    do {
+        card_layout_compute(win_w, win_h, scale, c->game->title, meta, c->text, &L);
+    } while (!L.ok && --scale >= 1);
 
-    /* Integer, square-pixel scale: the card never antialiases or stretches. */
-    scale = win_w / fb_w;
-    if (win_h / fb_h < scale)
-        scale = win_h / fb_h;
-    if (scale < 1)
-        scale = 1;
-    line_h = CARD_CELL_H * scale;
-    pad_y  = CARD_PAD_Y * scale;
-    top_h  = ntop * line_h + 2 * pad_y;
-    bot_h  = nbot * line_h + 2 * pad_y;
-    if (top_h > win_h)
-        top_h = win_h;
-    if (bot_h > win_h)
-        bot_h = win_h;
+    if (L.top_h > win_h)
+        L.top_h = win_h;
+    if (L.bot_h > win_h)
+        L.bot_h = win_h;
 
     v = g_card.verts;
-    for (int i = 0; i < ntop; i++)
-        card_emit_line(top[i], cell_w, scale, win_w, pad_y + i * line_h,
+    for (int i = 0; i < L.ntop; i++)
+        card_emit_line(L.top[i], L.cell_w, L.scale, win_w, L.pad_y + i * L.line_h,
                        &v, &nv, CARD_MAX_VERTS);
     title_verts = nv;   /* the top plate is drawn first, and tinted differently */
-    for (int i = 0; i < nbot; i++)
-        card_emit_line(bot[i], cell_w, scale, win_w,
-                       win_h - bot_h + pad_y + i * line_h,
+    for (int i = 0; i < L.nbot; i++)
+        card_emit_line(L.bot[i], L.cell_w, L.scale, win_w,
+                       win_h - L.bot_h + L.pad_y + i * L.line_h,
                        &v, &nv, CARD_MAX_VERTS);
     if (!nv)
         return;
@@ -2253,9 +2359,9 @@ static void card_draw(int win_w, int win_h) {
     glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
     glEnable(GL_SCISSOR_TEST);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glScissor(0, win_h - top_h, win_w, top_h);
+    glScissor(0, win_h - L.top_h, win_w, L.top_h);
     glClear(GL_COLOR_BUFFER_BIT);
-    glScissor(0, 0, win_w, bot_h);
+    glScissor(0, 0, win_w, L.bot_h);
     glClear(GL_COLOR_BUFFER_BIT);
     glDisable(GL_SCISSOR_TEST);
     glClearColor(clear[0], clear[1], clear[2], clear[3]);

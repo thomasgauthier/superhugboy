@@ -69,23 +69,47 @@ must be readable in one frame and why no reveal animation is permitted.
 | Property | Requirement |
 |---|---|
 | Typeface | Embedded monospace bitmap, integer-scaled, no antialiasing, no letterspacing |
-| Cell size | Largest of `{8x8, 6x8}` at which every line fits the plate width |
-| Overflow | If the widest line still does not fit at `6x8`, wrap it onto an additional line inside its plate |
+| Size | The whole card is `CARD_SCALE_MULT` (3) times the glyph scale the framebuffer maps to 1:1, so bars and type grow together |
+| Cell size | Largest of `{8x8, 6x8}` at which every authored line still fits whole |
+| Overflow | Lines wrap inside their plate; if a word still cannot be shown, the scale steps down |
 | Case | Uppercase |
 | Colour | Top plate white; bottom plate yellow (`rgb(255,255,0)`). See *Plate colours*. |
 | Coordinate space | Core framebuffer space, drawn through the same transform as the video quad |
 | Character set | ASCII `0x20`-`0x7E` (see *Transliteration*) |
 
-Fit rule: `usable_columns = floor((framebuffer_width - 2 * pad_x) / cell_width)`, `pad_x = 8`.
+Fit rule, measured in **window pixels** because that is where the text lands:
 
-| Core frame | 8x8 | 6x8 |
-|---|---|---|
-| NES / SNES 256 px | 30 cols | 40 cols |
-| GBA 240 px | 28 cols | 37 cols |
-| GB 160 px | 18 cols | 24 cols |
-| Genesis / Neo Geo 320 px | 38 cols | 50 cols |
+```
+usable_columns = (window_width - 2 * pad_x * scale) / (cell_width * scale)
+```
+
+The scale is chosen by stepping down from `base * CARD_SCALE_MULT` until the layout fits:
+every word shown, and both plates inside the window. At the base scale — text the size of the
+framebuffer's own pixels — a card always fits, so the search always terminates.
+
+Because the type triples, the metadata line no longer fits beside the title on every system and
+wraps. That is expected: the bars are sized from their text, so wrapping makes them taller, which
+is what "at least 3×" asks for.
+
+Observed sizes at `CARD_SCALE_MULT = 3`:
+
+| System | Window | Base | Used | Bars (top / bottom) |
+|---|---|---|---|---|
+| NES / SNES | 768x588 | 2 | 6 (3×) | 192 px / 96 px — 4× and 3× the 1× card |
+| Genesis | 960x705 | 3 | 9 (3×) | 360 px / 216 px |
+| Game Boy | 480x432 | 3 | 5 (1.7×) | 160 px / 120 px |
+
+Game Boy is the one system that cannot reach 3×: a 480 px window cannot hold a 19-character
+metadata line at triple size even wrapped, so the search stops where the card still fits.
 
 A Game Boy frame cannot fit a metadata line at `8x8`; `6x8` is the working size on narrow frames.
+
+### Wrapping
+
+Wrapped text keeps to the plate: lines break between words, a separator left dangling at a break
+is dropped, and a single short word stranded on the last line pulls the previous line's last word
+down with it (`STREETS OF RAGE` / `2` becomes `STREETS OF` / `RAGE 2`). A word longer than a line
+cannot be fixed by wrapping, so it forces a smaller cell or a smaller scale instead of being cut.
 
 ### Plate colours
 
@@ -181,7 +205,11 @@ from the challenge rows — authored once, by ROM. See *Open questions*.
 5. A blank-text challenge → no plates, nothing drawn.
 6. Across an entire run: the game image never shifts, resizes, or gains/loses a border. The only
    thing that changes is pixels drawn on top.
-7. A Game Boy challenge renders both plates without overflow at `6x8`.
+7. Both plates come out at least triple their 1× thickness wherever the window allows it, with the
+   type grown to match: 3× on NES, SNES and Genesis, and 1.7× on Game Boy, where a 480 px window
+   cannot hold the metadata at triple size.
+8. At every scale the search reaches, nothing is cut: no word clipped, no line past the window
+   edge, no plate taller than the window, no plate covering the other.
 
 ## Non-goals
 
@@ -227,6 +255,12 @@ end-of-run scorecard · stage numbering · input-gated dismissal · drawing outs
   by an integer factor derived from the framebuffer-to-window ratio, and drawn in window pixel
   space by the card's own pass. Going through the quad's transform instead would force
   fractional scaling, which the integer-scaling and no-antialiasing requirements rule out.
+- **Scale search.** The card's size is a multiple of the glyph scale the framebuffer maps to 1:1,
+  and the layout is computed in window pixels — the plate's width, the columns a line has, and the
+  check that both plates fit the window. `card_layout_compute()` reports whether a candidate scale
+  fits, and the draw steps down from `base * CARD_SCALE_MULT` until it does. Measuring in
+  framebuffer units instead (as the 1× card did) only worked because the two agreed at 1:1; at 3×
+  it would have drawn the metadata off the edge of the window.
 - **State restore.** The card pass saves and restores the clear colour and puts the game
   quad's matrix and tint back into `u_mvp` and `u_tint`, because the two passes share one
   program.

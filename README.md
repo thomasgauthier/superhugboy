@@ -14,6 +14,11 @@ The 36 challenges and their rule tables are the `challenges[]` table in `sdlarch
 
 ## Build
 
+Requires a C compiler, SDL2 development headers and `pkg-config`.
+[SDL2_gfx](https://github.com/giroletm/SDL2_gfx) primitives, its stock font and
+rotozoom dependency are vendored unmodified under `vendor/SDL2_gfx/`
+(revision `d985671e7ff715ff349f48295a9a6377d4927c35`); no separate gfx install is needed.
+
 ```
 make
 ```

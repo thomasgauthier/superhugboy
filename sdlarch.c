@@ -1,5 +1,6 @@
 
 #include <SDL.h>
+#include "vendor/SDL2_gfx/SDL2_gfxPrimitives.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1865,8 +1866,6 @@ static int         g_nshadow = 0;
 #define CARD_PAD_X       8     /* margin, framebuffer px */
 #define CARD_PAD_Y       4     /* plate padding, framebuffer px */
 #define CARD_CELL_H      8
-#define CARD_GLYPH_W     5     /* glyph box inside an 8x8 atlas cell */
-#define CARD_CELL_MIN_W  6     /* narrow cell: 5 px glyph + 1 px gap */
 #define CARD_CELL_MAX_W  8
 #define CARD_MAX_LINES   4     /* per plate */
 #define CARD_MAX_COLS    96
@@ -1874,126 +1873,19 @@ static int         g_nshadow = 0;
  * The plates are sized from their text, so this grows the bars with it. The
  * scale steps down from here when the window cannot hold the result. */
 #define CARD_SCALE_MULT  3
-#define CARD_ATLAS_CELL  8
-#define CARD_ATLAS_COLS  16
-#define CARD_ATLAS_W     (CARD_ATLAS_COLS * CARD_ATLAS_CELL)
-#define CARD_ATLAS_H     (8 * CARD_ATLAS_CELL)
 #define CARD_FIRST_CHAR  0x20
 #define CARD_LAST_CHAR   0x7E
-#define CARD_MAX_VERTS   (6 * CARD_MAX_LINES * 2 * CARD_MAX_COLS)
-
-/* 5x7 glyphs, one byte per row, bit 4 = leftmost column. ASCII 0x20-0x7E. */
-static const uint8_t card_font[][7] = {
-    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, /*   */
-    { 0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04 }, /* ! */
-    { 0x0A, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00 }, /* " */
-    { 0x0A, 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x0A }, /* # */
-    { 0x04, 0x0F, 0x14, 0x0E, 0x05, 0x1E, 0x04 }, /* $ */
-    { 0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03 }, /* % */
-    { 0x0C, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0D }, /* & */
-    { 0x04, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00 }, /* ' */
-    { 0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02 }, /* ( */
-    { 0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08 }, /* ) */
-    { 0x00, 0x15, 0x0E, 0x1F, 0x0E, 0x15, 0x00 }, /* * */
-    { 0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00 }, /* + */
-    { 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x08 }, /* , */
-    { 0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00 }, /* - */
-    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C }, /* . */
-    { 0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10 }, /* / */
-    { 0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E }, /* 0 */
-    { 0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E }, /* 1 */
-    { 0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F }, /* 2 */
-    { 0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E }, /* 3 */
-    { 0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02 }, /* 4 */
-    { 0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E }, /* 5 */
-    { 0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E }, /* 6 */
-    { 0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08 }, /* 7 */
-    { 0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E }, /* 8 */
-    { 0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C }, /* 9 */
-    { 0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x00 }, /* : */
-    { 0x00, 0x0C, 0x0C, 0x00, 0x0C, 0x0C, 0x08 }, /* ; */
-    { 0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02 }, /* < */
-    { 0x00, 0x00, 0x1F, 0x00, 0x1F, 0x00, 0x00 }, /* = */
-    { 0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08 }, /* > */
-    { 0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04 }, /* ? */
-    { 0x0E, 0x11, 0x17, 0x15, 0x17, 0x10, 0x0E }, /* @ */
-    { 0x04, 0x0A, 0x11, 0x11, 0x1F, 0x11, 0x11 }, /* A */
-    { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E }, /* B */
-    { 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E }, /* C */
-    { 0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C }, /* D */
-    { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F }, /* E */
-    { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10 }, /* F */
-    { 0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F }, /* G */
-    { 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 }, /* H */
-    { 0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E }, /* I */
-    { 0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C }, /* J */
-    { 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 }, /* K */
-    { 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F }, /* L */
-    { 0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11 }, /* M */
-    { 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 }, /* N */
-    { 0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E }, /* O */
-    { 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10 }, /* P */
-    { 0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D }, /* Q */
-    { 0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11 }, /* R */
-    { 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E }, /* S */
-    { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 }, /* T */
-    { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E }, /* U */
-    { 0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04 }, /* V */
-    { 0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11 }, /* W */
-    { 0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11 }, /* X */
-    { 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04 }, /* Y */
-    { 0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F }, /* Z */
-    { 0x0E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0E }, /* [ */
-    { 0x10, 0x08, 0x08, 0x04, 0x02, 0x02, 0x01 }, /* \ */
-    { 0x0E, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0E }, /* ] */
-    { 0x04, 0x0A, 0x11, 0x00, 0x00, 0x00, 0x00 }, /* ^ */
-    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F }, /* _ */
-    { 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00 }, /* ` */
-    { 0x00, 0x00, 0x0E, 0x01, 0x0F, 0x11, 0x0F }, /* a */
-    { 0x10, 0x10, 0x1E, 0x11, 0x11, 0x11, 0x1E }, /* b */
-    { 0x00, 0x00, 0x0E, 0x10, 0x10, 0x11, 0x0E }, /* c */
-    { 0x01, 0x01, 0x0F, 0x11, 0x11, 0x11, 0x0F }, /* d */
-    { 0x00, 0x00, 0x0E, 0x11, 0x1F, 0x10, 0x0E }, /* e */
-    { 0x06, 0x08, 0x08, 0x1E, 0x08, 0x08, 0x08 }, /* f */
-    { 0x00, 0x0F, 0x11, 0x11, 0x0F, 0x01, 0x0E }, /* g */
-    { 0x10, 0x10, 0x1E, 0x11, 0x11, 0x11, 0x11 }, /* h */
-    { 0x04, 0x00, 0x0C, 0x04, 0x04, 0x04, 0x0E }, /* i */
-    { 0x02, 0x00, 0x06, 0x02, 0x02, 0x12, 0x0C }, /* j */
-    { 0x10, 0x10, 0x12, 0x14, 0x18, 0x14, 0x12 }, /* k */
-    { 0x0C, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E }, /* l */
-    { 0x00, 0x00, 0x1A, 0x15, 0x15, 0x11, 0x11 }, /* m */
-    { 0x00, 0x00, 0x1E, 0x11, 0x11, 0x11, 0x11 }, /* n */
-    { 0x00, 0x00, 0x0E, 0x11, 0x11, 0x11, 0x0E }, /* o */
-    { 0x00, 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10 }, /* p */
-    { 0x00, 0x0F, 0x11, 0x11, 0x0F, 0x01, 0x01 }, /* q */
-    { 0x00, 0x00, 0x16, 0x18, 0x10, 0x10, 0x10 }, /* r */
-    { 0x00, 0x00, 0x0F, 0x10, 0x0E, 0x01, 0x1E }, /* s */
-    { 0x08, 0x08, 0x1E, 0x08, 0x08, 0x09, 0x06 }, /* t */
-    { 0x00, 0x00, 0x11, 0x11, 0x11, 0x13, 0x0D }, /* u */
-    { 0x00, 0x00, 0x11, 0x11, 0x11, 0x0A, 0x04 }, /* v */
-    { 0x00, 0x00, 0x11, 0x11, 0x15, 0x15, 0x0A }, /* w */
-    { 0x00, 0x00, 0x11, 0x0A, 0x04, 0x0A, 0x11 }, /* x */
-    { 0x00, 0x11, 0x11, 0x11, 0x0F, 0x01, 0x0E }, /* y */
-    { 0x00, 0x00, 0x1F, 0x02, 0x04, 0x08, 0x1F }, /* z */
-    { 0x03, 0x04, 0x04, 0x08, 0x04, 0x04, 0x03 }, /* { */
-    { 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 }, /* | */
-    { 0x18, 0x04, 0x04, 0x02, 0x04, 0x04, 0x18 }, /* } */
-    { 0x00, 0x00, 0x0D, 0x12, 0x00, 0x00, 0x00 }, /* ~ */
-};
-
-/* Text colours for the two plates. The objective is the thing the player acts
- * on, so it carries the accent; the cartridge's identity stays neutral. The
- * glyph atlas is white, so these are pure multipliers. */
+/* SDL2_gfx rasterizes whole lines; GL draws one quad per line. */
 static const float CARD_TITLE_COLOR[3] = { 1.0f, 1.0f, 1.0f };
 static const float CARD_TEXT_COLOR[3]  = { 1.0f, 1.0f, 0.0f };
 
 struct card_vert { float x, y, u, v; };
 
 static struct {
-    GLuint   vao, vbo, atlas;
+    GLuint vao, vbo, text;
     uint64_t armed_at;
-    int      showing;
-    struct card_vert verts[CARD_MAX_VERTS];
+    int showing, dirty, win_w, win_h, fb_w, fb_h;
+    int top_h, bot_h, nv, title_verts;
 } g_card = { 0 };
 
 /* Arm the card for the challenge now in g_cur. Loaded anywhere a savestate is
@@ -2003,68 +1895,19 @@ static void card_begin(void) {
     const struct challenge *c = &challenges[g_cur];
     g_card.armed_at = SDL_GetTicks64();
     g_card.showing = (c->game && c->text && c->text[0]) ? 1 : 0;
+    g_card.dirty = 1;
 }
 
 static void card_deinit(void) {
-    if (g_card.atlas) glDeleteTextures(1, &g_card.atlas);
-    if (g_card.vao)   glDeleteVertexArrays(1, &g_card.vao);
-    if (g_card.vbo)   glDeleteBuffers(1, &g_card.vbo);
-    g_card.atlas = 0;
-    g_card.vao = 0;
-    g_card.vbo = 0;
+    if (g_card.text) glDeleteTextures(1, &g_card.text);
+    if (g_card.vao) glDeleteVertexArrays(1, &g_card.vao);
+    if (g_card.vbo) glDeleteBuffers(1, &g_card.vbo);
+    g_card.text = g_card.vao = g_card.vbo = 0;
+    g_card.dirty = 1;
 }
 
-/* Build the glyph atlas and the card's own VAO/VBO. The game quad's buffer is
- * rebuilt only on a video configure, so the card must not share it. */
-static void card_init_gl(void) {
-    uint8_t px[CARD_ATLAS_W * CARD_ATLAS_H * 4];
-    memset(px, 0, sizeof px);
 
-    for (size_t g = 0; g < sizeof card_font / sizeof card_font[0]; g++) {
-        int ox = (int)(g % CARD_ATLAS_COLS) * CARD_ATLAS_CELL;
-        int oy = (int)(g / CARD_ATLAS_COLS) * CARD_ATLAS_CELL;
-        for (int ry = 0; ry < 7; ry++) {
-            for (int rx = 0; rx < CARD_GLYPH_W; rx++) {
-                if (!(card_font[g][ry] & (1 << (CARD_GLYPH_W - 1 - rx))))
-                    continue;
-                uint8_t *d = &px[((oy + ry) * CARD_ATLAS_W + ox + rx) * 4];
-                d[0] = 255;
-                d[1] = 255;
-                d[2] = 255;
-                d[3] = 255;
-            }
-        }
-    }
-
-    glGenTextures(1, &g_card.atlas);
-    glBindTexture(GL_TEXTURE_2D, g_card.atlas);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    /* video_refresh leaves UNPACK_ROW_LENGTH set to the video pitch for its own
-     * upload; inheriting it here would read the atlas rows at the wrong stride. */
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, CARD_ATLAS_W, CARD_ATLAS_H, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, px);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    glGenVertexArrays(1, &g_card.vao);
-    glGenBuffers(1, &g_card.vbo);
-    glBindVertexArray(g_card.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, g_card.vbo);
-    glEnableVertexAttribArray(g_shader.i_pos);
-    glEnableVertexAttribArray(g_shader.i_coord);
-    glVertexAttribPointer(g_shader.i_pos, 2, GL_FLOAT, GL_FALSE,
-                          sizeof(struct card_vert), (void *)0);
-    glVertexAttribPointer(g_shader.i_coord, 2, GL_FLOAT, GL_FALSE,
-                          sizeof(struct card_vert), (void *)(2 * sizeof(float)));
-    glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-}
-
-/* Uppercase, drop what the atlas cannot draw, and greedily wrap `src` into at
+/* Uppercase, keep printable ASCII, and greedily wrap `src` into at
  * most `max` lines of `cols` columns. Returns the number of lines written.
  * Sets *truncated when the plate was too small to show every word, which the
  * caller treats as "this scale does not fit". */
@@ -2169,7 +2012,7 @@ static int card_longest_word(const char *s) {
             if (++run > best)
                 best = run;
         }
-        /* Anything the atlas cannot draw is dropped without breaking the word. */
+        /* Unsupported characters are dropped without breaking the word. */
     }
     return best;
 }
@@ -2215,21 +2058,12 @@ static void card_layout_compute(int win_w, int win_h, int base, int scale,
         word_top = wm;
     word_bot = card_longest_word(text);
 
-    /* Prefer the widest cell at which every line still fits whole, measured at
-     * the scale that plate actually draws at; fall back to the narrow cell and
-     * let the lines wrap. */
+    /* SDL2_gfx's stock font uses fixed 8x8 cells. */
     L->cell_w = CARD_CELL_MAX_W;
     cols_top = card_cols(win_w, L->cell_w, L->title_scale);
     cols_bot = card_cols(win_w, L->cell_w, L->text_scale);
     L->whole = (int)strlen(title) <= cols_top && (int)strlen(meta) <= cols_top &&
                (int)strlen(text) <= cols_bot;
-    if (!L->whole) {
-        L->cell_w = CARD_CELL_MIN_W;
-        cols_top = card_cols(win_w, L->cell_w, L->title_scale);
-        cols_bot = card_cols(win_w, L->cell_w, L->text_scale);
-        L->whole = (int)strlen(title) <= cols_top && (int)strlen(meta) <= cols_top &&
-                   (int)strlen(text) <= cols_bot;
-    }
 
     /* A word longer than a line can never be shown, whatever the wrapping does,
      * so that alone rules this scale out. */
@@ -2258,7 +2092,8 @@ static void card_layout_compute(int win_w, int win_h, int base, int scale,
 
     /* Every line on one row and the whole card inside the window. A scale that
      * forces a wrap is not accepted while a smaller one avoids it. */
-    L->ok = L->whole && !truncated && L->top_h + L->bot_h <= win_h;
+    L->ok = (L->whole || scale == 1) && !truncated &&
+            L->top_h + L->bot_h <= win_h;
 }
 
 /* Pixel-space matrix for the card's own pass. The vertex shader multiplies the
@@ -2277,154 +2112,153 @@ static void card_ortho(int win_w, int win_h, float m[4][4]) {
     m[3][3] =  1.0f;
 }
 
-/* Emit the quads for one line of text, centred horizontally, top at `y`. */
-static void card_emit_line(const char *line, int cell_w, int scale, int win_w, int y,
-                           struct card_vert **vpp, int *nv, int maxv) {
-    size_t n = strlen(line);
-    struct card_vert *v = *vpp;
-    int added = 0;
-
-    if (n) {
-        int gw = cell_w * scale, gh = CARD_CELL_H * scale;
-        int x0 = ((win_w - (int)n * gw) / (2 * scale)) * scale;
-
-        for (size_t i = 0; i < n; i++) {
-            unsigned char ch = (unsigned char)line[i];
-            int g = (ch >= CARD_FIRST_CHAR && ch <= CARD_LAST_CHAR)
-                  ? ch - CARD_FIRST_CHAR : 0;
-            float u0 = (float)((g % CARD_ATLAS_COLS) * CARD_ATLAS_CELL) / CARD_ATLAS_W;
-            float t0 = (float)((g / CARD_ATLAS_COLS) * CARD_ATLAS_CELL) / CARD_ATLAS_H;
-            float u1 = u0 + (float)cell_w / CARD_ATLAS_W;
-            float t1 = t0 + (float)CARD_ATLAS_CELL / CARD_ATLAS_H;
-            float xa = (float)(x0 + (int)i * gw), ya = (float)y;
-            float xb = xa + gw, yb = ya + gh;
-            struct card_vert quad[6] = {
-                { xa, ya, u0, t0 }, { xb, ya, u1, t0 }, { xa, yb, u0, t1 },
-                { xb, ya, u1, t0 }, { xb, yb, u1, t1 }, { xa, yb, u0, t1 },
-            };
-
-            if (*nv + added + 6 > maxv)
-                break;
-            memcpy(v + added, quad, sizeof quad);
-            added += 6;
-        }
+/* Rebuild only on challenge/video changes or resize, never on every frame. */
+static void card_build(int win_w, int win_h, const struct card_layout *L) {
+    int rows = L->ntop + L->nbot, cols = 1;
+    struct card_vert verts[6 * CARD_MAX_LINES * 2];
+    for (int row = 0; row < rows; row++) {
+        const char *line = row < L->ntop ? L->top[row] : L->bot[row - L->ntop];
+        int n = (int)strlen(line);
+        if (n > cols) cols = n;
     }
-
-    *vpp = v + added;
-    *nv += added;
+    SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormat(0, cols * CARD_CELL_MAX_W,
+        rows * CARD_CELL_H, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!surface) die("Failed to allocate title-card text: %s", SDL_GetError());
+    SDL_Renderer *renderer = SDL_CreateSoftwareRenderer(surface);
+    if (!renderer) die("Failed to create title-card renderer: %s", SDL_GetError());
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
+    if (SDL_RenderClear(renderer) < 0)
+        die("Failed to clear title-card text: %s", SDL_GetError());
+    for (int row = 0; row < rows; row++) {
+        int top = row < L->ntop;
+        int i = top ? row : row - L->ntop;
+        int count = top ? L->ntop : L->nbot;
+        int scale = top ? L->title_scale : L->text_scale;
+        int bar_h = top ? L->top_h : L->bot_h;
+        const char *line = top ? L->top[i] : L->bot[i];
+        int width = (int)strlen(line) * CARD_CELL_MAX_W * scale;
+        int height = CARD_CELL_H * scale;
+        int x = ((win_w - width) / (2 * scale)) * scale;
+        int y = (top ? 0 : win_h - bar_h) +
+                ((bar_h - count * height) / (2 * scale)) * scale + i * height;
+        if (GFX_stringRGBA(renderer, 0, row * CARD_CELL_H, line,
+                           255, 255, 255, 255) < 0)
+            die("Failed to draw title-card text: %s", SDL_GetError());
+        float u = (float)strlen(line) / cols;
+        float v0 = (float)row / rows, v1 = (float)(row + 1) / rows;
+        const struct card_vert quad[6] = {
+            {x, y, 0, v0}, {x + width, y, u, v0}, {x, y + height, 0, v1},
+            {x + width, y, u, v0}, {x + width, y + height, u, v1},
+            {x, y + height, 0, v1}
+        };
+        memcpy(verts + row * 6, quad, sizeof quad);
+    }
+    SDL_RenderPresent(renderer);
+    /* SDL2_gfx caches textures globally; clear while their renderer is alive. */
+    GFX_gfxPrimitivesSetFont(NULL, 8, 8);
+    SDL_DestroyRenderer(renderer);
+    if (!g_card.text) glGenTextures(1, &g_card.text);
+    glBindTexture(GL_TEXTURE_2D, g_card.text);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    GLint row_length, alignment;
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row_length);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, surface->pitch / 4);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, surface->w, surface->h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, surface->pixels);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, row_length);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
+    SDL_FreeSurface(surface);
+    if (!g_card.vao) {
+        glGenVertexArrays(1, &g_card.vao);
+        glGenBuffers(1, &g_card.vbo);
+        glBindVertexArray(g_card.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, g_card.vbo);
+        glEnableVertexAttribArray(g_shader.i_pos);
+        glEnableVertexAttribArray(g_shader.i_coord);
+        glVertexAttribPointer(g_shader.i_pos, 2, GL_FLOAT, GL_FALSE,
+                              sizeof(struct card_vert), (void *)0);
+        glVertexAttribPointer(g_shader.i_coord, 2, GL_FLOAT, GL_FALSE,
+                              sizeof(struct card_vert), (void *)(2 * sizeof(float)));
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, g_card.vbo);
+    glBufferData(GL_ARRAY_BUFFER, rows * 6 * sizeof(struct card_vert),
+                 verts, GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    g_card.win_w = win_w;
+    g_card.win_h = win_h;
+    g_card.fb_w = g_video.clip_w;
+    g_card.fb_h = g_video.clip_h;
+    g_card.top_h = L->top_h;
+    g_card.bot_h = L->bot_h;
+    g_card.nv = rows * 6;
+    g_card.title_verts = L->ntop * 6;
+    g_card.dirty = 0;
 }
 
-/* The two plates plus their text, over the frame the game just produced. */
 static void card_draw(int win_w, int win_h) {
-    const struct challenge *c;
-    struct card_layout L;
-    char meta[CARD_MAX_COLS];
-    GLfloat clear[4];
-    float m[4][4];
-    struct card_vert *v;
-    int fb_w, fb_h, base, scale;
-    int nv = 0, title_verts = 0;
-
-    if (!g_card.showing)
-        return;
+    if (!g_card.showing) return;
     if (SDL_GetTicks64() - g_card.armed_at >= CARD_MS) {
-        g_card.showing = 0;   /* hard cut: no fade */
+        g_card.showing = 0;
         return;
     }
-    if (!g_card.atlas)
-        card_init_gl();
-    if (!g_card.atlas || win_w < 32 || win_h < 32)
-        return;
-
-    c = &challenges[g_cur];
-    snprintf(meta, sizeof meta, "%s - %s - %s", c->game->year,
-             c->game->publisher, c->game->platform);
-
-    /* Integer, square-pixel scale: the card never antialiases or stretches.
-     * Start at the requested multiple of the framebuffer's own scale, then step
-     * down until the window can hold the result. */
-    fb_w = g_video.clip_w > 0 ? (int)g_video.clip_w : 256;
-    fb_h = g_video.clip_h > 0 ? (int)g_video.clip_h : 224;
-    base = win_w / fb_w;
-    if (win_h / fb_h < base)
-        base = win_h / fb_h;
-    if (base < 1)
-        base = 1;
-
-    scale = base * CARD_SCALE_MULT;
-    do {
-        card_layout_compute(win_w, win_h, base, scale, c->game->title, meta,
-                            c->text, &L);
-    } while (!L.ok && --scale >= 1);
-
-    if (L.top_h > win_h)
-        L.top_h = win_h;
-    if (L.bot_h > win_h)
-        L.bot_h = win_h;
-
-    v = g_card.verts;
-    /* Both plates draw smaller than their bars, so each is centred in the bar it
-     * was given rather than placed at the plate padding. */
-    {
-        int top_line_h = CARD_CELL_H * L.title_scale;
-        int block_h = L.ntop * top_line_h;
-        int top_y = ((L.top_h - block_h) / (2 * L.title_scale)) * L.title_scale;
-        for (int i = 0; i < L.ntop; i++)
-            card_emit_line(L.top[i], L.cell_w, L.title_scale, win_w,
-                           top_y + i * top_line_h, &v, &nv, CARD_MAX_VERTS);
+    if (win_w < 32 || win_h < 32) return;
+    if (g_card.dirty || win_w != g_card.win_w || win_h != g_card.win_h ||
+        (int)g_video.clip_w != g_card.fb_w || (int)g_video.clip_h != g_card.fb_h) {
+        const struct challenge *c = &challenges[g_cur];
+        char meta[CARD_MAX_COLS];
+        struct card_layout L;
+        int fb_w = g_video.clip_w ? (int)g_video.clip_w : 256;
+        int fb_h = g_video.clip_h ? (int)g_video.clip_h : 224;
+        int base = win_w / fb_w;
+        if (win_h / fb_h < base) base = win_h / fb_h;
+        if (base < 1) base = 1;
+        snprintf(meta, sizeof meta, "%s - %s - %s", c->game->year,
+                 c->game->publisher, c->game->platform);
+        for (int scale = base * CARD_SCALE_MULT; scale >= 1; scale--) {
+            card_layout_compute(win_w, win_h, base, scale, c->game->title,
+                                meta, c->text, &L);
+            if (L.ok) break;
+        }
+        if (!L.ok) return; /* No unclipped layout fits this window. */
+        card_build(win_w, win_h, &L);
     }
-    title_verts = nv;   /* the top plate is drawn first, and tinted differently */
-    {
-        int bot_line_h = CARD_CELL_H * L.text_scale;
-        int block_h = L.nbot * bot_line_h;
-        int bot_y = win_h - L.bot_h +
-                    ((L.bot_h - block_h) / (2 * L.text_scale)) * L.text_scale;
-        for (int i = 0; i < L.nbot; i++)
-            card_emit_line(L.bot[i], L.cell_w, L.text_scale, win_w,
-                           bot_y + i * bot_line_h, &v, &nv, CARD_MAX_VERTS);
-    }
-    if (!nv)
-        return;
-
-    /* Plates: an opaque black clear inside the plate rect, over the game image.
-     * Full window width, because the video quad fills the window. */
+    GLfloat clear[4];
     glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
     glEnable(GL_SCISSOR_TEST);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glScissor(0, win_h - L.top_h, win_w, L.top_h);
+    glClearColor(0, 0, 0, 1);
+    glScissor(0, win_h - g_card.top_h, win_w, g_card.top_h);
     glClear(GL_COLOR_BUFFER_BIT);
-    glScissor(0, 0, win_w, L.bot_h);
+    glScissor(0, 0, win_w, g_card.bot_h);
     glClear(GL_COLOR_BUFFER_BIT);
     glDisable(GL_SCISSOR_TEST);
     glClearColor(clear[0], clear[1], clear[2], clear[3]);
-
+    float m[4][4];
     card_ortho(win_w, win_h, m);
-
     glUseProgram(g_shader.program);
     glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float *)m);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, g_card.atlas);
+    glBindTexture(GL_TEXTURE_2D, g_card.text);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glBindVertexArray(g_card.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, g_card.vbo);
-    glBufferData(GL_ARRAY_BUFFER, (long)nv * (long)sizeof(struct card_vert),
-                 g_card.verts, GL_STREAM_DRAW);
     glUniform4f(g_shader.u_tint, CARD_TITLE_COLOR[0], CARD_TITLE_COLOR[1],
-                CARD_TITLE_COLOR[2], 1.0f);
-    glDrawArrays(GL_TRIANGLES, 0, title_verts);
-    if (nv > title_verts) {
-        glUniform4f(g_shader.u_tint, CARD_TEXT_COLOR[0], CARD_TEXT_COLOR[1],
-                    CARD_TEXT_COLOR[2], 1.0f);
-        glDrawArrays(GL_TRIANGLES, title_verts, nv - title_verts);
-    }
+                CARD_TITLE_COLOR[2], 1);
+    glDrawArrays(GL_TRIANGLES, 0, g_card.title_verts);
+    glUniform4f(g_shader.u_tint, CARD_TEXT_COLOR[0], CARD_TEXT_COLOR[1],
+                CARD_TEXT_COLOR[2], 1);
+    glDrawArrays(GL_TRIANGLES, g_card.title_verts, g_card.nv - g_card.title_verts);
     glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
     glDisable(GL_BLEND);
     glBindTexture(GL_TEXTURE_2D, 0);
-    /* The game quad shares this program and these uniforms: put them back. */
     glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float *)g_game_mvp);
-    glUniform4f(g_shader.u_tint, 1.0f, 1.0f, 1.0f, 1.0f);
+    glUniform4f(g_shader.u_tint, 1, 1, 1, 1);
     glUseProgram(0);
 }
 

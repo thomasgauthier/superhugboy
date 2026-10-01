@@ -72,7 +72,7 @@ must be readable in one frame and why no reveal animation is permitted.
 | Bar size | The bars are `CARD_SCALE_MULT` (3) times the glyph scale the framebuffer maps to 1:1, so they thicken with the card |
 | Top text | Draws at half again the framebuffer's own 1:1 scale and sits centred, both ways, inside its bar — the cartridge's identity is a caption |
 | Bottom text | Draws at 80% of the card's scale — the objective is the headline, trimmed just enough to sit one step under the bars |
-| Cell size | Widest of `{8x8, 6x8}` at which every authored line fits its plate whole |
+| Cell size | Fixed 8×8 SDL2_gfx bitmap-font cell |
 | Overflow | The scale steps down rather than wrap; wrapping remains the floor if no scale can fit the words |
 | Case | Uppercase |
 | Colour | Top plate white; bottom plate yellow (`rgb(255,255,0)`). See *Plate colours*. |
@@ -87,62 +87,43 @@ usable_columns(plate) = (window_width - 2 * pad_x * plate_scale) / (cell_width *
 ```
 
 `pad_x` is 8. The card scale starts at `base * CARD_SCALE_MULT`, where `base` is the largest integer
-scale at which the core's framebuffer maps 1:1 into the window, and steps down one at a time until
-the layout is accepted. A scale is accepted when every line fits its plate **whole**, no word is
-clipped, and both bars fit inside the window. At `base` itself a card always fits, so the search
-always terminates.
+scale at which the core's framebuffer maps 1:1 into the window, and steps down to 1.
+A scale is accepted when every line fits whole and both bars fit inside the window.
+At scale 1, word wrapping is allowed if no text is truncated. If even that layout cannot fit,
+the card is not drawn at that window size.
 
-Because a scale that would force a wrap is rejected while a smaller one avoids it, no shipped card
-wraps a line: the bars stay as thick as the window allows and the type is what gives way to keep
-each line on one row.
-
-Observed at `CARD_SCALE_MULT = 3`:
-
-| System | Window | Base | Card scale | Top text | Bottom text | Top bar | Bottom bar | Covered |
-|---|---|---|---|---|---|---|---|---|
-| NES / SNES | 768x588 | 2 | 6 (3×) | 3 | 5 (83%) | 144 px | 96 px | 41% |
-| Genesis | 960x732 | 3 | 9 (3×) | 4 | 7 (78%) | 216 px | 144 px | 49% |
-| Game Boy | 480x429 | 2 | 5 (2.5×) | 3 | 4 (80%) | 120 px | 80 px | 47% |
-
-Game Boy stops at 5 rather than 6 because at 6 the objective gets 13 columns and `CHOOSE A POKEMON!`
-needs 17 — that scale is rejected as a wrap and 5 is used instead. Every system lands on the `6x8`
-cell: at `8x8` the metadata line no longer fits beside the title at the card's scale.
-
-Integer scales mean the 80% objective lands on a whole step: NES/SNES 6 → 5, Genesis 9 → 7, Game Boy
-5 → 4.
+At normal gameplay window sizes, authored lines stay whole. The stock SDL2_gfx 8×8 font is wider
+than the former custom 6×8 option, so some challenges use smaller card scales to keep their text
+inside the plates.
 
 ### Wrapping
 
-Wrapping is a floor, not the normal case. The search refuses any scale that would wrap a line, so a
-shipped card keeps every line on one row; the wrapper exists for text whose longest word does not fit
-even at the smallest scale, and it stays inside its plate. Lines break between words, a separator
-left dangling at a break is dropped, and a single short word stranded on the last line pulls the
-previous line's last word down with it (`STREETS OF RAGE` / `2` becomes `STREETS OF` / `RAGE 2`). A
-word longer than a line cannot be fixed by wrapping, so it forces a smaller cell or a smaller scale
-instead of being cut.
+Wrapping is a floor, not the normal case. It is accepted only at scale 1 after all larger
+whole-line layouts fail. Lines break between words, a separator left dangling at a break is
+dropped, and a single short word stranded on the last line pulls the previous line's last word
+down with it (`STREETS OF RAGE` / `2` becomes `STREETS OF` / `RAGE 2`). A word that cannot fit at
+scale 1 makes the layout invalid rather than being clipped.
 
 ### Plate colours
 
 The cartridge's identity reads white; the objective reads yellow, because the objective
 is the one line the player acts on and the accent makes it the thing the eye lands on.
 
-Both are pure multipliers on the white glyph atlas (`CARD_TITLE_COLOR`, `CARD_TEXT_COLOR`
+Both are pure multipliers on the white text texture (`CARD_TITLE_COLOR`, `CARD_TEXT_COLOR`
 in `sdlarch.c`), applied through the shader's `u_tint`. Changing either — or making the
-whole card one colour — is a single three-float constant, and no part of the font, the
-layout or the atlas changes.
+whole card one colour — is a single three-float constant; the font and layout do not change.
 
 The game quad shares that program, so the tint is set to white both at shader setup and
 after the card pass; the core's pixels are never tinted.
 
 ### Transliteration
 
-The bitmap atlas is ASCII-only, so:
+The card accepts printable ASCII only, so:
 
 - Platform names are abbreviated: `NES`, `SNES`, `GB`, `GBA`, `GEN`, `NEOGEO`.
 - Separator between metadata fields is an ASCII hyphen, `1990 - NINTENDO - SNES`. U+00B7 (`·`) is
   not available.
-- Upstream `"Choose a pokémon!"` transliterates to `"CHOOSE A POKEMON!"` rather than adding `É` to
-  the atlas.
+- Upstream `"Choose a pokémon!"` transliterates to `"CHOOSE A POKEMON!"`.
 
 ## Data
 
@@ -215,10 +196,10 @@ from the challenge rows — authored once, by ROM. See *Open questions*.
 5. A blank-text challenge → no plates, nothing drawn.
 6. Across an entire run: the game image never shifts, resizes, or gains/loses a border. The only
    thing that changes is pixels drawn on top.
-7. Both bars come out at least 2.5× their 1× thickness wherever the window allows — 3× on NES, SNES
-   and Genesis, 2.5× on Game Boy — with the top caption at half again the 1:1 size and the objective
-   at 80% of the card's scale, each centred in its bar. No shipped card wraps a line: a scale that
-   would wrap is rejected in favour of a smaller one.
+7. Bars start at `CARD_SCALE_MULT` (3) times their 1× thickness, stepping down as needed for
+   the 8×8 font. The top caption uses half again the 1:1 scale (capped by card scale);
+   the objective uses 80% of card scale, rounded to an integer. Both are centred.
+   Whole lines are preferred; wrapping is only the scale-1 fallback.
 8. At every scale the search reaches, nothing is cut: no word clipped, no line past the window
    edge, no plate taller than the window, no plate covering the other.
 
@@ -244,39 +225,14 @@ end-of-run scorecard · stage numbering · input-gated dismissal · drawing outs
 
 ## Implementation notes
 
-- **Cell choice.** The widest of `{8x8, 6x8}` at which every authored line fits its plate whole,
-  measured at the scale that plate draws at. In practice every system lands on `6x8`: at `8x8` the
-  metadata line will not sit beside the title at the card's scale.
-- **Per-plate scales.** One card scale yields three: the bars are sized at it, the objective draws at
-  80% of it (`(scale * 4 + 2) / 5`, rounded to the nearest integer scale) and the top caption at half
-  again the framebuffer's 1:1 scale (`base + base / 2`). Because the bars are sized from the card
-  scale rather than from either text, shrinking a text never thins its bar; each text is centred in
-  the bar it was given. `card_layout` carries both text scales so the layout and the draw pass cannot
-  disagree.
-- **Glyph atlas.** One 128x64 RGBA texture holding 8x8 cells for ASCII 0x20-0x7E, with
-  each glyph occupying the left 5 columns and top 7 rows, so a `6x8` cell is the same
-  glyph sampled one column narrower rather than a second font.
-- **The shader's matrix convention.** `gl_Position = vec4(i_pos, 0, 1) * u_mvp` multiplies
-  the position as a *row* vector, so the matrix the shader consumes is the transpose of
-  the usual column-vector ortho. `ortho2d()` never exposed this because the game quad's
-  matrix has no translation; a pixel-space matrix with translation in the bottom row
-  silently produces `w != 1` and collapses every vertex. `card_ortho()` builds the matrix
-  in the layout the shader actually consumes.
-- **`GL_UNPACK_ROW_LENGTH`.** `video_refresh()` leaves it set to the video pitch for its
-  own upload. An atlas upload that inherits it reads its rows at the wrong stride, so the
-  glyph texture is built with an explicit `glPixelStorei(GL_UNPACK_ROW_LENGTH, 0)`.
-- **Coordinate mechanism.** The spec's "core framebuffer space, through the same transform as
-  the video quad" is met in effect, not literally: the layout is computed in framebuffer units
-  (the cell fits `framebuffer_width`, the plate height follows the line count) and then scaled
-  by an integer factor derived from the framebuffer-to-window ratio, and drawn in window pixel
-  space by the card's own pass. Going through the quad's transform instead would force
-  fractional scaling, which the integer-scaling and no-antialiasing requirements rule out.
-- **Scale search.** The card's size is a multiple of the glyph scale the framebuffer maps to 1:1,
-  and the layout is computed in window pixels — the plate's width, the columns a line has, and the
-  check that both plates fit the window. `card_layout_compute()` reports whether a candidate scale
-  fits, and the draw steps down from `base * CARD_SCALE_MULT` until it does. Measuring in
-  framebuffer units instead (as the 1× card did) only worked because the two agreed at 1:1; at 3×
-  it would have drawn the metadata off the edge of the window.
+- **SDL2_gfx rendering.** `GFX_stringRGBA()` draws complete lines using the vendored stock
+  8×8 font into a small transparent software-rendered surface. OpenGL composites one
+  quad per line at the plate's integer text scale. There is no private font, glyph atlas,
+  or per-character vertex generation.
+- **Caching.** Layout, text texture and line vertices rebuild on challenge load, reset,
+  window resize or framebuffer dimension changes, not every frame.
+- **Font cache lifetime.** SDL2_gfx caches glyph textures globally. Reset that cache before
+  destroying the temporary software renderer.
 - **State restore.** The card pass saves and restores the clear colour and puts the game
   quad's matrix and tint back into `u_mvp` and `u_tint`, because the two passes share one
   program.

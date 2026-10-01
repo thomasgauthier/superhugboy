@@ -1,6 +1,6 @@
 UNAME_S := $(shell uname -s)
 target   := sdlarch
-sources  := sdlarch.c glad.c
+sources  := sdlarch.c glad.c vendor/SDL2_gfx/SDL2_gfxPrimitives.c vendor/SDL2_gfx/SDL2_rotozoom.c
 
 CFLAGS   := -Wall -g
 ifeq ($(UNAME_S),Darwin)
@@ -8,7 +8,7 @@ LFLAGS   := -static-libstdc++
 else
 LFLAGS   := -static-libgcc
 endif
-LIBS     := 
+LIBS     := -lm
 packages := sdl2
 
 # do not edit from here onwards

@@ -208,6 +208,12 @@ end-of-run scorecard · stage numbering · input-gated dismissal · drawing outs
 - **`GL_UNPACK_ROW_LENGTH`.** `video_refresh()` leaves it set to the video pitch for its
   own upload. An atlas upload that inherits it reads its rows at the wrong stride, so the
   glyph texture is built with an explicit `glPixelStorei(GL_UNPACK_ROW_LENGTH, 0)`.
+- **Coordinate mechanism.** The spec's "core framebuffer space, through the same transform as
+  the video quad" is met in effect, not literally: the layout is computed in framebuffer units
+  (the cell fits `framebuffer_width`, the plate height follows the line count) and then scaled
+  by an integer factor derived from the framebuffer-to-window ratio, and drawn in window pixel
+  space by the card's own pass. Going through the quad's transform instead would force
+  fractional scaling, which the integer-scaling and no-antialiasing requirements rule out.
 - **State restore.** The card pass saves and restores the clear colour and puts the game
   quad's matrix back into `u_mvp`, because the two passes share one program.
 - **Pre-existing engine bug, not part of this feature.** `g_pending_reset` is never

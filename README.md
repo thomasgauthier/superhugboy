@@ -82,8 +82,8 @@ winner first; up to 20 other available non-interlude challenges are sampled with
 weights, without replacement. Preview picks never alter recency weights. The interlude
 remains outside the random pool and can still be selected as the actual winner.
 
-The reel slows over **2.5 seconds**, then holds the winner for **250 ms** with a quiet landing
-bell. Gameplay, rules and core audio are stopped during this theatre; `F` and `ESC` still work.
+The reel decelerates continuously over **2.5 seconds**, without slowing to align at each
+preview, then holds the winner for **250 ms** with a quiet landing bell. Gameplay, rules and core audio are stopped during this theatre; `F` and `ESC` still work.
 The winner's real savestate is loaded once at landing, and its title-card timer starts again
 when live play resumes. Blank-text challenges still have no title card.
 

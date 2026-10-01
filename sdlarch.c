@@ -2975,11 +2975,12 @@ static int roll_sequence(int winner, int sequence[ROLL_PREVIEWS + 1]) {
     return count;
 }
 
-/* A minimum beat followed by increasingly long dwell times: rrrrr -> tic tic. */
-static unsigned roll_boundary(int step, int previews) {
-    if (!previews) return ROLL_MS;
-    double x = (double)step / previews;
-    return (unsigned)(ROLL_MS * (0.28 * x + 0.72 * x * x * x) + 0.5);
+/* One ease-out across the whole reel: velocity decreases continuously, never
+ * resetting at preview boundaries. Only the final winner comes to rest. */
+static double roll_position(uint64_t elapsed, int previews) {
+    if (elapsed >= ROLL_MS) return previews;
+    double remaining = 1.0 - (double)elapsed / ROLL_MS;
+    return previews * (1.0 - remaining * remaining);
 }
 
 static void roll_begin(int winner) {
@@ -3121,8 +3122,9 @@ static void roll_draw(uint64_t elapsed) {
     SDL_GL_GetDrawableSize(g_win, &w, &h);
     if (w <= 0 || h <= 0) return;
     roll_resize(w, h);
-    int previews = g_roll.count - 1, step = 0;
-    while (step < previews && elapsed >= roll_boundary(step + 1, previews)) step++;
+    int previews = g_roll.count - 1;
+    double position = roll_position(elapsed, previews);
+    int step = (int)position;
     int current = g_roll.sequence[step];
     /* Retain the current composite while replacing the other scene. */
     if (g_roll.scene[1].challenge == current) {
@@ -3137,10 +3139,7 @@ static void roll_draw(uint64_t elapsed) {
 #if ROLL_STYLE == ROLL_SCROLL
     if (step < previews) {
         GLuint first = roll_scene(current);
-        int offset;
-        unsigned begin = roll_boundary(step, previews), end = roll_boundary(step + 1, previews);
-        double t = (double)(elapsed - begin) / (end - begin);
-        offset = (int)(h * t * t * (3 - 2 * t) + 0.5);
+        int offset = (int)(h * (position - step) + 0.5);
         GLuint second = roll_scene(g_roll.sequence[step + 1]);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, w, h);

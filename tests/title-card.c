@@ -63,18 +63,19 @@ int main(void) {
         assert(memcmp(avail_before, g_avail, sizeof g_avail) == 0);
         assert(memcmp(weights_before, g_dynw, sizeof g_dynw) == 0);
         int previews = count - 1;
-        if (previews) {
-            assert(roll_boundary(0, previews) == 0);
-            assert(roll_boundary(previews, previews) == ROLL_MS);
-            unsigned previous_dwell = 0;
-            for (int p = 0; p < previews; p++) {
-                unsigned dwell = roll_boundary(p + 1, previews) - roll_boundary(p, previews);
-                assert(dwell > 0 && dwell >= previous_dwell);
-                previous_dwell = dwell;
-            }
+        assert(roll_position(0, previews) == 0);
+        assert(roll_position(ROLL_MS / 2, previews) == previews * 0.75);
+        assert(roll_position(ROLL_MS, previews) == previews);
+        assert(roll_position(ROLL_MS + 100, previews) == previews);
+        double previous_speed = previews;
+        for (uint64_t t = 1; t <= ROLL_MS; t++) {
+            double speed = roll_position(t, previews) - roll_position(t - 1, previews);
+            assert(speed >= 0 && speed <= previous_speed + 1e-12);
+            if (previews) assert(speed > 0); /* No intermediate landings. */
+            previous_speed = speed;
         }
     }
-    puts("Reel exclusions, small pools, recency isolation and slowing rhythm: PASS");
+    puts("Reel exclusions, recency isolation and continuous deceleration: PASS");
     for (int i = 0; i < N_CHALLENGES; i++) {
         char bmp[4096], info[4096];
         preview_paths(i, bmp, info);

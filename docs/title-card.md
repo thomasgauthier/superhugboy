@@ -72,7 +72,7 @@ must be readable in one frame and why no reveal animation is permitted.
 | Cell size | Largest of `{8x8, 6x8}` at which every line fits the plate width |
 | Overflow | If the widest line still does not fit at `6x8`, wrap it onto an additional line inside its plate |
 | Case | Uppercase |
-| Colour | Light, high contrast on black |
+| Colour | Top plate white; bottom plate yellow (`rgb(255,255,0)`). See *Plate colours*. |
 | Coordinate space | Core framebuffer space, drawn through the same transform as the video quad |
 | Character set | ASCII `0x20`-`0x7E` (see *Transliteration*) |
 
@@ -86,6 +86,19 @@ Fit rule: `usable_columns = floor((framebuffer_width - 2 * pad_x) / cell_width)`
 | Genesis / Neo Geo 320 px | 38 cols | 50 cols |
 
 A Game Boy frame cannot fit a metadata line at `8x8`; `6x8` is the working size on narrow frames.
+
+### Plate colours
+
+The cartridge's identity reads white; the objective reads yellow, because the objective
+is the one line the player acts on and the accent makes it the thing the eye lands on.
+
+Both are pure multipliers on the white glyph atlas (`CARD_TITLE_COLOR`, `CARD_TEXT_COLOR`
+in `sdlarch.c`), applied through the shader's `u_tint`. Changing either — or making the
+whole card one colour — is a single three-float constant, and no part of the font, the
+layout or the atlas changes.
+
+The game quad shares that program, so the tint is set to white both at shader setup and
+after the card pass; the core's pixels are never tinted.
 
 ### Transliteration
 
@@ -215,7 +228,8 @@ end-of-run scorecard · stage numbering · input-gated dismissal · drawing outs
   space by the card's own pass. Going through the quad's transform instead would force
   fractional scaling, which the integer-scaling and no-antialiasing requirements rule out.
 - **State restore.** The card pass saves and restores the clear colour and puts the game
-  quad's matrix back into `u_mvp`, because the two passes share one program.
+  quad's matrix and tint back into `u_mvp` and `u_tint`, because the two passes share one
+  program.
 - **Pre-existing engine bug, not part of this feature.** `g_pending_reset` is never
   cleared after the reset fires, so `reload_current_state()` runs once per frame from
   then on — the state reloads ~50x/s and the game appears frozen. Since the card is armed

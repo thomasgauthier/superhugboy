@@ -52,6 +52,7 @@ static struct {
     GLint i_pos;
     GLint i_coord;
     GLint u_tex;
+    GLint u_tint;
     GLint u_mvp;
 
 } g_shader = {0};
@@ -81,9 +82,10 @@ static const char *g_fshader_src =
     "#version 150\n"
     "in vec2 o_coord;\n"
     "uniform sampler2D u_tex;\n"
+    "uniform vec4 u_tint;\n"
     "out vec4 o_color;\n"
     "void main() {\n"
-        "o_color = texture(u_tex, o_coord);\n"
+        "o_color = texture(u_tex, o_coord) * u_tint;\n"
     "}";
 
 
@@ -227,6 +229,7 @@ static void init_shaders() {
     g_shader.i_pos   = glGetAttribLocation(program,  "i_pos");
     g_shader.i_coord = glGetAttribLocation(program,  "i_coord");
     g_shader.u_tex   = glGetUniformLocation(program, "u_tex");
+    g_shader.u_tint  = glGetUniformLocation(program, "u_tint");
     g_shader.u_mvp   = glGetUniformLocation(program, "u_mvp");
 
     glGenVertexArrays(1, &g_shader.vao);
@@ -235,6 +238,9 @@ static void init_shaders() {
     glUseProgram(g_shader.program);
 
     glUniform1i(g_shader.u_tex, 0);
+    /* The game quad must sample the core's pixels untinted. The card pass is the
+     * only thing that changes this, and it puts it back. */
+    glUniform4f(g_shader.u_tint, 1.0f, 1.0f, 1.0f, 1.0f);
 
     float m[4][4];
     if (g_video.hw.bottom_left_origin)
@@ -1971,6 +1977,12 @@ static const uint8_t card_font[][7] = {
     { 0x00, 0x00, 0x0D, 0x12, 0x00, 0x00, 0x00 }, /* ~ */
 };
 
+/* Text colours for the two plates. The objective is the thing the player acts
+ * on, so it carries the accent; the cartridge's identity stays neutral. The
+ * glyph atlas is white, so these are pure multipliers. */
+static const float CARD_TITLE_COLOR[3] = { 1.0f, 1.0f, 1.0f };
+static const float CARD_TEXT_COLOR[3]  = { 1.0f, 1.0f, 0.0f };
+
 struct card_vert { float x, y, u, v; };
 
 static struct {
@@ -2168,7 +2180,7 @@ static void card_draw(int win_w, int win_h) {
     float m[4][4];
     struct card_vert *v;
     int fb_w, fb_h, cell_w, cols, ntop, nbot, scale, line_h, pad_y, top_h, bot_h;
-    int nv = 0;
+    int nv = 0, title_verts = 0;
     size_t longest;
 
     if (!g_card.showing)
@@ -2228,6 +2240,7 @@ static void card_draw(int win_w, int win_h) {
     for (int i = 0; i < ntop; i++)
         card_emit_line(top[i], cell_w, scale, win_w, pad_y + i * line_h,
                        &v, &nv, CARD_MAX_VERTS);
+    title_verts = nv;   /* the top plate is drawn first, and tinted differently */
     for (int i = 0; i < nbot; i++)
         card_emit_line(bot[i], cell_w, scale, win_w,
                        win_h - bot_h + pad_y + i * line_h,
@@ -2259,13 +2272,21 @@ static void card_draw(int win_w, int win_h) {
     glBindBuffer(GL_ARRAY_BUFFER, g_card.vbo);
     glBufferData(GL_ARRAY_BUFFER, (long)nv * (long)sizeof(struct card_vert),
                  g_card.verts, GL_STREAM_DRAW);
-    glDrawArrays(GL_TRIANGLES, 0, nv);
+    glUniform4f(g_shader.u_tint, CARD_TITLE_COLOR[0], CARD_TITLE_COLOR[1],
+                CARD_TITLE_COLOR[2], 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, title_verts);
+    if (nv > title_verts) {
+        glUniform4f(g_shader.u_tint, CARD_TEXT_COLOR[0], CARD_TEXT_COLOR[1],
+                    CARD_TEXT_COLOR[2], 1.0f);
+        glDrawArrays(GL_TRIANGLES, title_verts, nv - title_verts);
+    }
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glDisable(GL_BLEND);
     glBindTexture(GL_TEXTURE_2D, 0);
-    /* The game quad shares this program and this uniform: put its matrix back. */
+    /* The game quad shares this program and these uniforms: put them back. */
     glUniformMatrix4fv(g_shader.u_mvp, 1, GL_FALSE, (float *)g_game_mvp);
+    glUniform4f(g_shader.u_tint, 1.0f, 1.0f, 1.0f, 1.0f);
     glUseProgram(0);
 }
 

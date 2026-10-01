@@ -2178,68 +2178,87 @@ static int card_longest_word(const char *s) {
  * wrapped lines, and the plate heights that follow from them. */
 struct card_layout {
     int  cell_w, scale, cols, line_h, pad_y;
+    int  title_scale, text_scale;   /* the scale each plate's text draws at */
     int  ntop, nbot, top_h, bot_h;
     int  ok;                  /* every word shown, both plates inside the window */
+    int  whole;               /* every line fitted its plate without wrapping */
     char top[CARD_MAX_LINES][CARD_MAX_COLS];
     char bot[CARD_MAX_LINES][CARD_MAX_COLS];
 };
 
+/* Columns a plate drawing at scale `s` has room for, in glyph cells. */
+static int card_cols(int win_w, int cell_w, int s) {
+    return (win_w - 2 * CARD_PAD_X * s) / (cell_w * s);
+}
+
 /* Lay the card out at one glyph scale. The text is measured in window pixels,
  * because that is where it lands, so a scale too large for the window is
  * reported through `ok` rather than drawn off the edge. */
-static void card_layout_compute(int win_w, int win_h, int scale, const char *title,
-                                const char *meta, const char *text,
-                                struct card_layout *L) {
-    int wm, wt, word, cols, truncated = 0;
-    int room = win_w - 2 * CARD_PAD_X * scale;
-    size_t longest = strlen(title);
+static void card_layout_compute(int win_w, int win_h, int base, int scale,
+                                const char *title, const char *meta,
+                                const char *text, struct card_layout *L) {
+    int truncated = 0;
+    int word_top, word_bot, cols_top, cols_bot, wm;
 
     memset(L, 0, sizeof *L);
     L->scale = scale;
-    if (strlen(meta) > longest)
-        longest = strlen(meta);
-    if (strlen(text) > longest)
-        longest = strlen(text);
+    L->title_scale = base + base / 2;
+    if (L->title_scale > scale)
+        L->title_scale = scale;
+    L->text_scale = (scale * 4 + 2) / 5;
+    if (L->text_scale < 1)
+        L->text_scale = 1;
 
-    /* Largest cell at which every authored line still fits whole. */
-    L->cell_w = CARD_CELL_MIN_W;
-    if ((int)longest <= room / (CARD_CELL_MAX_W * scale))
-        L->cell_w = CARD_CELL_MAX_W;
-    cols = room / (L->cell_w * scale);
+    word_top = card_longest_word(title);
+    wm = card_longest_word(meta);
+    if (wm > word_top)
+        word_top = wm;
+    word_bot = card_longest_word(text);
+
+    /* Prefer the widest cell at which every line still fits whole, measured at
+     * the scale that plate actually draws at; fall back to the narrow cell and
+     * let the lines wrap. */
+    L->cell_w = CARD_CELL_MAX_W;
+    cols_top = card_cols(win_w, L->cell_w, L->title_scale);
+    cols_bot = card_cols(win_w, L->cell_w, L->text_scale);
+    L->whole = (int)strlen(title) <= cols_top && (int)strlen(meta) <= cols_top &&
+               (int)strlen(text) <= cols_bot;
+    if (!L->whole) {
+        L->cell_w = CARD_CELL_MIN_W;
+        cols_top = card_cols(win_w, L->cell_w, L->title_scale);
+        cols_bot = card_cols(win_w, L->cell_w, L->text_scale);
+        L->whole = (int)strlen(title) <= cols_top && (int)strlen(meta) <= cols_top &&
+                   (int)strlen(text) <= cols_bot;
+    }
 
     /* A word longer than a line can never be shown, whatever the wrapping does,
-     * so that alone rules the wider cell out. */
-    word = card_longest_word(title);
-    wm = card_longest_word(meta);
-    wt = card_longest_word(text);
-    if (wm > word)
-        word = wm;
-    if (wt > word)
-        word = wt;
-
-    if (cols < word && L->cell_w == CARD_CELL_MAX_W) {
-        L->cell_w = CARD_CELL_MIN_W;
-        cols = room / (L->cell_w * scale);
-    }
-    if (cols > CARD_MAX_COLS - 1)
-        cols = CARD_MAX_COLS - 1;
-    if (cols < word || cols < 1) {
+     * so that alone rules this scale out. */
+    if (cols_top < word_top || cols_bot < word_bot) {
         L->cols = 1;
         return;                          /* ok stays 0: shrink further */
     }
+    if (cols_top > CARD_MAX_COLS - 1)
+        cols_top = CARD_MAX_COLS - 1;
+    if (cols_bot > CARD_MAX_COLS - 1)
+        cols_bot = CARD_MAX_COLS - 1;
 
-    L->cols = cols;
-    L->ntop = card_paragraph(title, cols, L->top, CARD_MAX_LINES, &truncated);
+    L->cols = cols_bot;
+    L->ntop = card_paragraph(title, cols_top, L->top, CARD_MAX_LINES, &truncated);
     if (L->ntop < CARD_MAX_LINES)
-        L->ntop += card_paragraph(meta, cols, L->top + L->ntop,
+        L->ntop += card_paragraph(meta, cols_top, L->top + L->ntop,
                                   CARD_MAX_LINES - L->ntop, &truncated);
-    L->nbot = card_paragraph(text, cols, L->bot, CARD_MAX_LINES, &truncated);
+    L->nbot = card_paragraph(text, cols_bot, L->bot, CARD_MAX_LINES, &truncated);
 
+    /* The bars are sized at the card's own scale, not at the scale either plate
+     * draws at, so shrinking the type does not thin the bars. */
     L->line_h = CARD_CELL_H * scale;
     L->pad_y  = CARD_PAD_Y * scale;
     L->top_h  = L->ntop * L->line_h + 2 * L->pad_y;
     L->bot_h  = L->nbot * L->line_h + 2 * L->pad_y;
-    L->ok = !truncated && L->top_h + L->bot_h <= win_h;
+
+    /* Every line on one row and the whole card inside the window. A scale that
+     * forces a wrap is not accepted while a smaller one avoids it. */
+    L->ok = L->whole && !truncated && L->top_h + L->bot_h <= win_h;
 }
 
 /* Pixel-space matrix for the card's own pass. The vertex shader multiplies the
@@ -2303,7 +2322,7 @@ static void card_draw(int win_w, int win_h) {
     GLfloat clear[4];
     float m[4][4];
     struct card_vert *v;
-    int fb_w, fb_h, base, scale, title_scale;
+    int fb_w, fb_h, base, scale;
     int nv = 0, title_verts = 0;
 
     if (!g_card.showing)
@@ -2334,7 +2353,8 @@ static void card_draw(int win_w, int win_h) {
 
     scale = base * CARD_SCALE_MULT;
     do {
-        card_layout_compute(win_w, win_h, scale, c->game->title, meta, c->text, &L);
+        card_layout_compute(win_w, win_h, base, scale, c->game->title, meta,
+                            c->text, &L);
     } while (!L.ok && --scale >= 1);
 
     if (L.top_h > win_h)
@@ -2343,25 +2363,26 @@ static void card_draw(int win_w, int win_h) {
         L.bot_h = win_h;
 
     v = g_card.verts;
-    /* The cartridge's identity is a caption, the objective is the headline: the
-     * top text draws at the framebuffer's own 1:1 scale, centred in a bar that
-     * keeps the card's thickness. */
-    title_scale = base;
-    if (title_scale > scale)
-        title_scale = scale;
+    /* Both plates draw smaller than their bars, so each is centred in the bar it
+     * was given rather than placed at the plate padding. */
     {
-        int top_line_h = CARD_CELL_H * title_scale;
+        int top_line_h = CARD_CELL_H * L.title_scale;
         int block_h = L.ntop * top_line_h;
-        int top_y = ((L.top_h - block_h) / (2 * title_scale)) * title_scale;
+        int top_y = ((L.top_h - block_h) / (2 * L.title_scale)) * L.title_scale;
         for (int i = 0; i < L.ntop; i++)
-            card_emit_line(L.top[i], L.cell_w, title_scale, win_w,
+            card_emit_line(L.top[i], L.cell_w, L.title_scale, win_w,
                            top_y + i * top_line_h, &v, &nv, CARD_MAX_VERTS);
     }
     title_verts = nv;   /* the top plate is drawn first, and tinted differently */
-    for (int i = 0; i < L.nbot; i++)
-        card_emit_line(L.bot[i], L.cell_w, L.scale, win_w,
-                       win_h - L.bot_h + L.pad_y + i * L.line_h,
-                       &v, &nv, CARD_MAX_VERTS);
+    {
+        int bot_line_h = CARD_CELL_H * L.text_scale;
+        int block_h = L.nbot * bot_line_h;
+        int bot_y = win_h - L.bot_h +
+                    ((L.bot_h - block_h) / (2 * L.text_scale)) * L.text_scale;
+        for (int i = 0; i < L.nbot; i++)
+            card_emit_line(L.bot[i], L.cell_w, L.text_scale, win_w,
+                           bot_y + i * bot_line_h, &v, &nv, CARD_MAX_VERTS);
+    }
     if (!nv)
         return;
 

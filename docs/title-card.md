@@ -42,7 +42,7 @@ plates must align with the quad's edges, not float over the side bars).
 |---|---|---|
 | Top | `y = 0`, full framebuffer width | Line 1: game display title. Line 2: year - publisher - platform. |
 | Bottom | `y = framebuffer_height`, full framebuffer width | Challenge text (upstream `challenge_text`). |
-| Both | — | Solid `rgb(0,0,0)`. Text horizontally centred, vertically centred in its line box. |
+| Both | — | Solid `rgb(0,0,0)`. Text centred horizontally and vertically inside its bar. |
 
 Plate height = `lines * cell_height + 2 * pad_y`. Plate colour is pure black; opacity is one
 constant (opaque recommended — it is what makes the plates read as letterboxing).
@@ -70,48 +70,56 @@ must be readable in one frame and why no reveal animation is permitted.
 |---|---|
 | Typeface | Embedded monospace bitmap, integer-scaled, no antialiasing, no letterspacing |
 | Bar size | The bars are `CARD_SCALE_MULT` (3) times the glyph scale the framebuffer maps to 1:1, so they thicken with the card |
-| Top text | Draws at the framebuffer's own 1:1 scale and sits centred, both ways, inside its bar — the cartridge's identity is a caption |
-| Bottom text | Draws at the card's full scale — the objective is the headline |
-| Cell size | Largest of `{8x8, 6x8}` at which every authored line still fits whole |
-| Overflow | Lines wrap inside their plate; if a word still cannot be shown, the scale steps down |
+| Top text | Draws at half again the framebuffer's own 1:1 scale and sits centred, both ways, inside its bar — the cartridge's identity is a caption |
+| Bottom text | Draws at 80% of the card's scale — the objective is the headline, trimmed just enough to sit one step under the bars |
+| Cell size | Widest of `{8x8, 6x8}` at which every authored line fits its plate whole |
+| Overflow | The scale steps down rather than wrap; wrapping remains the floor if no scale can fit the words |
 | Case | Uppercase |
 | Colour | Top plate white; bottom plate yellow (`rgb(255,255,0)`). See *Plate colours*. |
 | Coordinate space | Core framebuffer space, drawn through the same transform as the video quad |
 | Character set | ASCII `0x20`-`0x7E` (see *Transliteration*) |
 
-Fit rule, measured in **window pixels** because that is where the text lands:
+Fit rule, measured in **window pixels** because that is where the text lands, and **per plate**
+because each plate draws at its own scale:
 
 ```
-usable_columns = (window_width - 2 * pad_x * scale) / (cell_width * scale)
+usable_columns(plate) = (window_width - 2 * pad_x * plate_scale) / (cell_width * plate_scale)
 ```
 
-The scale is chosen by stepping down from `base * CARD_SCALE_MULT` until the layout fits:
-every word shown, and both plates inside the window. At the base scale — text the size of the
-framebuffer's own pixels — a card always fits, so the search always terminates.
+`pad_x` is 8. The card scale starts at `base * CARD_SCALE_MULT`, where `base` is the largest integer
+scale at which the core's framebuffer maps 1:1 into the window, and steps down one at a time until
+the layout is accepted. A scale is accepted when every line fits its plate **whole**, no word is
+clipped, and both bars fit inside the window. At `base` itself a card always fits, so the search
+always terminates.
 
-Because the type triples, the metadata line no longer fits beside the title on every system and
-wraps. That is expected: the bars are sized from their text, so wrapping makes them taller, which
-is what "at least 3×" asks for.
+Because a scale that would force a wrap is rejected while a smaller one avoids it, no shipped card
+wraps a line: the bars stay as thick as the window allows and the type is what gives way to keep
+each line on one row.
 
 Observed at `CARD_SCALE_MULT = 3`:
 
-| System | Window | Base | Bar scale | Bottom text | Top text | Bars (top / bottom) |
-|---|---|---|---|---|---|---|
-| NES / SNES | 768x588 | 2 | 6 | 6 (3×) | 2 (1:1) | 192 px / 96 px — 4× and 3× the 1× card |
-| Genesis | 960x705 | 3 | 9 | 9 (3×) | 3 (1:1) | 360 px / 216 px |
-| Game Boy | 480x432 | 3 | 5 | 5 (1.7×) | 3 (1:1) | 160 px / 120 px |
+| System | Window | Base | Card scale | Top text | Bottom text | Top bar | Bottom bar | Covered |
+|---|---|---|---|---|---|---|---|---|
+| NES / SNES | 768x588 | 2 | 6 (3×) | 3 | 5 (83%) | 144 px | 96 px | 41% |
+| Genesis | 960x732 | 3 | 9 (3×) | 4 | 7 (78%) | 216 px | 144 px | 49% |
+| Game Boy | 480x429 | 2 | 5 (2.5×) | 3 | 4 (80%) | 120 px | 80 px | 47% |
 
-Game Boy is the one system whose bar scale cannot reach 3×: a 480 px window cannot hold a 19-character
-metadata line at triple size even wrapped, so the search stops where the card still fits.
+Game Boy stops at 5 rather than 6 because at 6 the objective gets 13 columns and `CHOOSE A POKEMON!`
+needs 17 — that scale is rejected as a wrap and 5 is used instead. Every system lands on the `6x8`
+cell: at `8x8` the metadata line no longer fits beside the title at the card's scale.
 
-A Game Boy frame cannot fit a metadata line at `8x8`; `6x8` is the working size on narrow frames.
+Integer scales mean the 80% objective lands on a whole step: NES/SNES 6 → 5, Genesis 9 → 7, Game Boy
+5 → 4.
 
 ### Wrapping
 
-Wrapped text keeps to the plate: lines break between words, a separator left dangling at a break
-is dropped, and a single short word stranded on the last line pulls the previous line's last word
-down with it (`STREETS OF RAGE` / `2` becomes `STREETS OF` / `RAGE 2`). A word longer than a line
-cannot be fixed by wrapping, so it forces a smaller cell or a smaller scale instead of being cut.
+Wrapping is a floor, not the normal case. The search refuses any scale that would wrap a line, so a
+shipped card keeps every line on one row; the wrapper exists for text whose longest word does not fit
+even at the smallest scale, and it stays inside its plate. Lines break between words, a separator
+left dangling at a break is dropped, and a single short word stranded on the last line pulls the
+previous line's last word down with it (`STREETS OF RAGE` / `2` becomes `STREETS OF` / `RAGE 2`). A
+word longer than a line cannot be fixed by wrapping, so it forces a smaller cell or a smaller scale
+instead of being cut.
 
 ### Plate colours
 
@@ -207,10 +215,10 @@ from the challenge rows — authored once, by ROM. See *Open questions*.
 5. A blank-text challenge → no plates, nothing drawn.
 6. Across an entire run: the game image never shifts, resizes, or gains/loses a border. The only
    thing that changes is pixels drawn on top.
-7. Both bars come out at least triple their 1× thickness wherever the window allows: 3× on NES,
-   SNES and Genesis, 1.7× on Game Boy, where a 480 px window cannot hold the metadata at triple
-   size. The bottom text scales with the bars; the top text stays at its 1:1 size and sits centred
-   in its bar.
+7. Both bars come out at least 2.5× their 1× thickness wherever the window allows — 3× on NES, SNES
+   and Genesis, 2.5× on Game Boy — with the top caption at half again the 1:1 size and the objective
+   at 80% of the card's scale, each centred in its bar. No shipped card wraps a line: a scale that
+   would wrap is rejected in favour of a smaller one.
 8. At every scale the search reaches, nothing is cut: no word clipped, no line past the window
    edge, no plate taller than the window, no plate covering the other.
 
@@ -236,10 +244,15 @@ end-of-run scorecard · stage numbering · input-gated dismissal · drawing outs
 
 ## Implementation notes
 
-- **Cell choice.** The largest of `{8x8, 6x8}` at which all three authored lines fit the
-  core's own width is used, so the type is as large as the cartridge allows. In practice
-  every system but Game Boy lands on `8x8`; Game Boy's `1998 - NINTENDO - GB` needs `6x8`
-  to fit 160 px. Verified on NES, SNES, Genesis and Game Boy.
+- **Cell choice.** The widest of `{8x8, 6x8}` at which every authored line fits its plate whole,
+  measured at the scale that plate draws at. In practice every system lands on `6x8`: at `8x8` the
+  metadata line will not sit beside the title at the card's scale.
+- **Per-plate scales.** One card scale yields three: the bars are sized at it, the objective draws at
+  80% of it (`(scale * 4 + 2) / 5`, rounded to the nearest integer scale) and the top caption at half
+  again the framebuffer's 1:1 scale (`base + base / 2`). Because the bars are sized from the card
+  scale rather than from either text, shrinking a text never thins its bar; each text is centred in
+  the bar it was given. `card_layout` carries both text scales so the layout and the draw pass cannot
+  disagree.
 - **Glyph atlas.** One 128x64 RGBA texture holding 8x8 cells for ASCII 0x20-0x7E, with
   each glyph occupying the left 5 columns and top 7 rows, so a `6x8` cell is the same
   glyph sampled one column narrower rather than a second font.

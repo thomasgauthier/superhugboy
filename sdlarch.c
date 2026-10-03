@@ -1876,7 +1876,7 @@ static int         g_pending_switch = 0, g_pending_reset = 0;
 static uint64_t    g_switch_at = 0, g_reset_at = 0;
 static unsigned    g_switch_ms = 0, g_reset_ms = 0;
 static int         g_latch = 0;
-static int         g_force_switch = 0;   /* T/Y keys */
+static int         g_force_switch = 0;   /* T/Y/U keys */
 static uint64_t    g_last_interlude = 0;
 static uint16_t    g_stable[MAX_RULES];
 static struct shadow g_shadow[MAX_SHADOWS];
@@ -3342,12 +3342,15 @@ static void process_events(void) {
                     fprintf(stderr, "[video] fullscreen toggle failed: %s\n", SDL_GetError());
             }
             if (!g_theatre && (ev.key.keysym.scancode == SDL_SCANCODE_T ||
-                               ev.key.keysym.scancode == SDL_SCANCODE_Y)) {
-                g_next_roll_style = ev.key.keysym.scancode == SDL_SCANCODE_T
-                                    ? ROLL_SCROLL : ROLL_CUT;
+                               ev.key.keysym.scancode == SDL_SCANCODE_Y ||
+                               ev.key.keysym.scancode == SDL_SCANCODE_U)) {
+                g_next_roll_style = ev.key.keysym.scancode == SDL_SCANCODE_T ? ROLL_SCROLL :
+                                    ev.key.keysym.scancode == SDL_SCANCODE_Y ? ROLL_CUT :
+                                    ROLL_SLOT_MACHINE;
                 g_force_switch = 1;
                 printf("[engine] force switch requested (%s)\n",
-                       g_next_roll_style == ROLL_SCROLL ? "T: scroll" : "Y: cut");
+                       g_next_roll_style == ROLL_SCROLL ? "T: scroll" :
+                       g_next_roll_style == ROLL_CUT ? "Y: cut" : "U: slot machine");
             }
             break;
         case SDL_WINDOWEVENT:
@@ -3399,7 +3402,7 @@ int main(int argc, char *argv[]) {
         roll_begin(start);
     }
 
-    printf("Controls: F fullscreen | F9 save state | T scroll switch | Y cut switch | ESC quit\n");
+    printf("Controls: F fullscreen | F9 save state | T scroll switch | Y cut switch | U slot-machine switch | ESC quit\n");
     printf("The engine picks the next challenge at random (weighted); the\n");
     printf("Super Mario World interlude is forced every %.0fs.\n\n",
            INTERLUDE_INTERVAL_S);

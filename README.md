@@ -76,7 +76,7 @@ window, with bar and text sizes shared across all cores and challenges.
 
 ## Challenge reel
 
-Every entry (cold start, ordinary switch, `T`/`Y`, or rule-driven reset) rolls through cached
+Every entry (cold start, ordinary switch, `T`/`Y`/`U`, or rule-driven reset) rolls through cached
 opening frames and their matching title cards. The existing weighted shuffle reserves the
 winner first; up to 20 other available non-interlude challenges are sampled with the same
 weights, without replacement. Preview picks never alter recency weights. The interlude
@@ -102,8 +102,9 @@ To compare styles, change this definition in `sdlarch.c` and run `make`:
 `ROLL_SLOT_MACHINE` adds progressively stronger, slightly irregular detents to the final
 contenders, four quiet mechanical thunks, and a small overshoot/rebound during the 250 ms
 landing hold. The screenshot and its title card move together; no extra gameplay runs.
-`T` always forces a smooth scrolling switch and `Y` forces hard cuts, independently of the
-default style above. Cold starts, automatic switches and resets use `ROLL_STYLE`.
+`T` forces a smooth scrolling switch, `Y` forces hard cuts, and `U` forces a slot-machine
+switch, independently of the default style above. Cold starts, automatic switches and
+resets use `ROLL_STYLE`.
 
 Missing or stale previews are captured before the run using the real ROM/core/savestate,
 with neutral input, muted audio and no rule evaluation. Later launches reuse them. The cache
@@ -123,7 +124,7 @@ cc $(pkg-config --cflags sdl2) tests/title-card.c build/glad.o \
 ## Controls
 
 `F` toggles fullscreen · `F9` writes the current state · `T` forces a scrolling switch ·
-`Y` forces a hard-cut switch · `ESC` quits.
+`Y` forces a hard-cut switch · `U` forces a slot-machine switch · `ESC` quits.
 
 If no audio device can be opened (headless hosts, `xvfb`), the port reports it and runs silent
 instead of refusing to start.

@@ -1876,7 +1876,7 @@ static int         g_pending_switch = 0, g_pending_reset = 0;
 static uint64_t    g_switch_at = 0, g_reset_at = 0;
 static unsigned    g_switch_ms = 0, g_reset_ms = 0;
 static int         g_latch = 0;
-static int         g_force_switch = 0;   /* T key */
+static int         g_force_switch = 0;   /* T/Y keys */
 static uint64_t    g_last_interlude = 0;
 static uint16_t    g_stable[MAX_RULES];
 static struct shadow g_shadow[MAX_SHADOWS];
@@ -2818,12 +2818,14 @@ static void reload_current_state(void) {
 }
 
 /* --- Cached opening frames and theatrical challenge reel ------------------- */
-#define ROLL_CUT    0
-#define ROLL_SCROLL 1
+#define ROLL_CUT          0
+#define ROLL_SCROLL       1
+#define ROLL_SLOT_MACHINE 2
 #ifndef ROLL_STYLE
-#define ROLL_STYLE ROLL_SCROLL /* Set to ROLL_CUT and rebuild to compare. */
+#define ROLL_STYLE ROLL_SCROLL /* Default for automatic switches and resets. */
 #endif
 #define ROLL_MS       2500
+#define ROLL_CURVE_STRENGTH 8.0 /* Higher = more time on later contenders. */
 #define ROLL_PAUSE_MS 250
 #define ROLL_PREVIEWS  20
 
@@ -2832,8 +2834,9 @@ static struct {
     float aspect;
     int width, height, tex_w, tex_h;
 } g_previews[N_CHALLENGES];
+static int g_next_roll_style = ROLL_STYLE;
 static struct {
-    int active, count, sequence[ROLL_PREVIEWS + 1], landed;
+    int active, count, sequence[ROLL_PREVIEWS + 1], landed, style, last_tick;
     uint64_t started_at, landed_at;
     GLuint vao, vbo, fbo;
     int w, h;
@@ -2975,15 +2978,47 @@ static int roll_sequence(int winner, int sequence[ROLL_PREVIEWS + 1]) {
     return count;
 }
 
-/* One ease-out across the whole reel: velocity decreases continuously, never
- * resetting at preview boundaries. Only the final winner comes to rest. */
+/* One distance-to-time curve for the entire reel, inverted by bisection.
+ * The linear share keeps early previews visible, exponential growth makes each
+ * contender last longer, and the small sqrt term brings landing speed to zero.
+ * No phase boundaries, constant-speed tail, or per-preview easing. */
 static double roll_position(uint64_t elapsed, int previews) {
+    if (!elapsed || !previews) return 0;
     if (elapsed >= ROLL_MS) return previews;
-    double remaining = 1.0 - (double)elapsed / ROLL_MS;
-    return previews * (1.0 - remaining * remaining);
+    double time = (double)elapsed / ROLL_MS;
+    double lo = 0, hi = 1, span = expm1(ROLL_CURVE_STRENGTH);
+    for (int i = 0; i < 48; i++) {
+        double p = (lo + hi) / 2;
+        double at = 0.25 * p + 0.70 * expm1(ROLL_CURVE_STRENGTH * p) / span +
+                    0.05 * (1 - sqrt(1 - p));
+        if (at < time) lo = p;
+        else hi = p;
+    }
+    return previews * (lo + hi) / 2;
+}
+
+/* Detents gradually catch the last few contenders. Their slightly different
+ * strengths give each crossing its own thunk, without changing the sequence. */
+static double roll_slot_position(uint64_t elapsed, int previews) {
+    if (!previews || elapsed >= ROLL_MS + ROLL_PAUSE_MS) return previews;
+    if (elapsed >= ROLL_MS) {
+        double t = (double)(elapsed - ROLL_MS) / ROLL_PAUSE_MS;
+        double decay = 1 - t;
+        return previews + 0.08 * sin(3 * M_PI * t) * decay * decay * decay;
+    }
+    double p = roll_position(elapsed, previews);
+    double span = previews < 5 ? previews : 5;
+    double catch = (p - (previews - span)) / span;
+    if (catch < 0) catch = 0;
+    catch = catch * catch * (3 - 2 * catch);
+    double detent = catch * (0.78 + 0.15 * sin(floor(p) * 2.4));
+    return p - detent * sin(2 * M_PI * (p - floor(p))) / (2 * M_PI);
 }
 
 static void roll_begin(int winner) {
+    g_roll.last_tick = -1;
+    g_roll.style = g_next_roll_style;
+    g_next_roll_style = ROLL_STYLE;
     g_theatre = g_roll.active = 1;
     g_roll.landed = 0;
     g_roll.count = roll_sequence(winner, g_roll.sequence);
@@ -2994,7 +3029,6 @@ static void roll_begin(int winner) {
     printf("[reel] %d previews -> %s\n", g_roll.count - 1, challenges[winner].name);
 }
 
-#if ROLL_STYLE == ROLL_SCROLL
 static void roll_quad(GLuint texture, int y) {
     int x = 0, w = g_roll.w, h = g_roll.h;
     float v0 = 1, v1 = 0;
@@ -3019,15 +3053,11 @@ static void roll_quad(GLuint texture, int y) {
     glUseProgram(0);
 }
 
-#endif
-
 static void roll_resize(int w, int h) {
     if (!g_roll.vao) {
         glGenVertexArrays(1, &g_roll.vao);
         glGenBuffers(1, &g_roll.vbo);
-#if ROLL_STYLE == ROLL_SCROLL
         glGenFramebuffers(1, &g_roll.fbo);
-#endif
         glBindVertexArray(g_roll.vao);
         glBindBuffer(GL_ARRAY_BUFFER, g_roll.vbo);
         glEnableVertexAttribArray(g_shader.i_pos);
@@ -3041,7 +3071,6 @@ static void roll_resize(int w, int h) {
     }
     if (w == g_roll.w && h == g_roll.h) return;
     g_roll.w = w; g_roll.h = h;
-#if ROLL_STYLE == ROLL_SCROLL
     /* Only two full-window composite textures, even at 4K. */
     for (int s = 0; s < 2; s++) {
         if (!g_roll.scene[s].texture) glGenTextures(1, &g_roll.scene[s].texture);
@@ -3054,7 +3083,6 @@ static void roll_resize(int w, int h) {
         g_roll.scene[s].challenge = -1;
     }
     glBindTexture(GL_TEXTURE_2D, 0);
-#endif
 }
 
 /* Match the live quad's texture bounds and viewport exactly, including its
@@ -3098,7 +3126,6 @@ static void roll_paint(int challenge) {
     card_render(challenge, 0, 0, 0, g_roll.w, g_roll.h);
 }
 
-#if ROLL_STYLE == ROLL_SCROLL
 static GLuint roll_scene(int challenge) {
     for (int s = 0; s < 2; s++)
         if (g_roll.scene[s].challenge == challenge) return g_roll.scene[s].texture;
@@ -3115,7 +3142,20 @@ static GLuint roll_scene(int challenge) {
     return g_roll.scene[slot].texture;
 }
 
-#endif
+static void roll_thunk(void) {
+    if (!g_pcm || g_pcm_rate <= 0) return;
+    int frames = g_pcm_rate * 30 / 1000;
+    int16_t *samples = malloc(frames * 2 * sizeof *samples);
+    if (!samples) return;
+    for (int i = 0; i < frames; i++) {
+        double t = (double)i / g_pcm_rate, decay = 1.0 - (double)i / frames;
+        double attack = t < 0.001 ? t / 0.001 : 1;
+        double wave = sin(2 * M_PI * 180 * t) + 0.3 * sin(2 * M_PI * 1100 * t);
+        samples[i*2] = samples[i*2+1] = (int16_t)(2200 * wave * attack * decay * decay);
+    }
+    SDL_QueueAudio(g_pcm, samples, frames * 2 * sizeof *samples);
+    free(samples);
+}
 
 static void roll_draw(uint64_t elapsed) {
     int w, h;
@@ -3123,8 +3163,16 @@ static void roll_draw(uint64_t elapsed) {
     if (w <= 0 || h <= 0) return;
     roll_resize(w, h);
     int previews = g_roll.count - 1;
-    double position = roll_position(elapsed, previews);
+    int slot = g_roll.style == ROLL_SLOT_MACHINE;
+    if (slot && g_roll.landed)
+        elapsed = ROLL_MS + SDL_GetTicks64() - g_roll.landed_at;
+    double position = slot ? roll_slot_position(elapsed, previews)
+                           : roll_position(elapsed, previews);
     int step = (int)position;
+    if (slot && elapsed < ROLL_MS && step > g_roll.last_tick) {
+        g_roll.last_tick = step;
+        if (step > 0 && step >= previews - 4) roll_thunk();
+    }
     int current = g_roll.sequence[step];
     /* Retain the current composite while replacing the other scene. */
     if (g_roll.scene[1].challenge == current) {
@@ -3136,11 +3184,12 @@ static void roll_draw(uint64_t elapsed) {
     } else if (g_roll.scene[0].challenge != current) {
         g_roll.scene[0].challenge = -1;
     }
-#if ROLL_STYLE == ROLL_SCROLL
-    if (step < previews) {
+    if (g_roll.style != ROLL_CUT && (step < previews || (slot && position > previews))) {
         GLuint first = roll_scene(current);
         int offset = (int)(h * (position - step) + 0.5);
-        GLuint second = roll_scene(g_roll.sequence[step + 1]);
+        /* A tiny overshoot peeks at the reel's wrapped neighbour, never blank
+         * space. The rebound briefly exposes the previous contender again. */
+        GLuint second = roll_scene(g_roll.sequence[(step + 1) % g_roll.count]);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, w, h);
         glDisable(GL_SCISSOR_TEST);
@@ -3149,9 +3198,7 @@ static void roll_draw(uint64_t elapsed) {
         glClear(GL_COLOR_BUFFER_BIT);
         roll_quad(first, -offset);
         roll_quad(second, h-offset);
-    } else
-#endif
-    {
+    } else {
         /* Direct rendering at rest matches live sampling exactly; no extra
          * framebuffer pass on the final landing (or in hard-cut mode). */
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -3190,6 +3237,7 @@ static void roll_tick(void) {
             g_avail[winner] = 0;
             int next = select_next(g_cur);
             if (next < 0) { running = false; return; }
+            g_next_roll_style = g_roll.style;
             roll_begin(next);
             return;
         }
@@ -3293,9 +3341,13 @@ static void process_events(void) {
                 if (SDL_SetWindowFullscreen(g_win, flags) < 0)
                     fprintf(stderr, "[video] fullscreen toggle failed: %s\n", SDL_GetError());
             }
-            if (ev.key.keysym.scancode == SDL_SCANCODE_T && !g_theatre) {
+            if (!g_theatre && (ev.key.keysym.scancode == SDL_SCANCODE_T ||
+                               ev.key.keysym.scancode == SDL_SCANCODE_Y)) {
+                g_next_roll_style = ev.key.keysym.scancode == SDL_SCANCODE_T
+                                    ? ROLL_SCROLL : ROLL_CUT;
                 g_force_switch = 1;
-                printf("[engine] force switch requested (T)\n");
+                printf("[engine] force switch requested (%s)\n",
+                       g_next_roll_style == ROLL_SCROLL ? "T: scroll" : "Y: cut");
             }
             break;
         case SDL_WINDOWEVENT:
@@ -3347,7 +3399,7 @@ int main(int argc, char *argv[]) {
         roll_begin(start);
     }
 
-    printf("Controls: F fullscreen | F9 save state | T force switch | ESC quit\n");
+    printf("Controls: F fullscreen | F9 save state | T scroll switch | Y cut switch | ESC quit\n");
     printf("The engine picks the next challenge at random (weighted); the\n");
     printf("Super Mario World interlude is forced every %.0fs.\n\n",
            INTERLUDE_INTERVAL_S);

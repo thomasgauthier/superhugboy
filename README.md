@@ -76,14 +76,18 @@ window, with bar and text sizes shared across all cores and challenges.
 
 ## Challenge reel
 
-Every entry (cold start, ordinary switch, `T`, or rule-driven reset) rolls through cached
+Every entry (cold start, ordinary switch, `T`/`Y`, or rule-driven reset) rolls through cached
 opening frames and their matching title cards. The existing weighted shuffle reserves the
 winner first; up to 20 other available non-interlude challenges are sampled with the same
 weights, without replacement. Preview picks never alter recency weights. The interlude
 remains outside the random pool and can still be selected as the actual winner.
 
-The reel decelerates continuously over **2.5 seconds**, without slowing to align at each
-preview, then holds the winner for **250 ms** with a quiet landing bell. Gameplay, rules and core audio are stopped during this theatre; `F` and `ESC` still work.
+The **2.5-second** reel slows along one continuous curve: every contender takes longer than
+the previous one, with no separate fast/slow phases or intermediate stops. With 20 previews,
+the last four take about **210, 300, 430 and 640 ms**, keeping several possibilities in play.
+Tune `ROLL_CURVE_STRENGTH` in `sdlarch.c`; higher values give later contenders more time.
+The winner settles to rest, then holds for **250 ms** with a quiet landing bell.
+Gameplay, rules and core audio are stopped during this theatre; `F` and `ESC` still work.
 The winner's real savestate is loaded once at landing, and its title-card timer starts again
 when live play resumes. Blank-text challenges still have no title card.
 
@@ -92,7 +96,14 @@ To compare styles, change this definition in `sdlarch.c` and run `make`:
 ```c
 #define ROLL_STYLE ROLL_SCROLL  /* vertical reel; default */
 // #define ROLL_STYLE ROLL_CUT  /* hard-cut succession */
+// #define ROLL_STYLE ROLL_SLOT_MACHINE /* late detents and spring landing */
 ```
+
+`ROLL_SLOT_MACHINE` adds progressively stronger, slightly irregular detents to the final
+contenders, four quiet mechanical thunks, and a small overshoot/rebound during the 250 ms
+landing hold. The screenshot and its title card move together; no extra gameplay runs.
+`T` always forces a smooth scrolling switch and `Y` forces hard cuts, independently of the
+default style above. Cold starts, automatic switches and resets use `ROLL_STYLE`.
 
 Missing or stale previews are captured before the run using the real ROM/core/savestate,
 with neutral input, muted audio and no rule evaluation. Later launches reuse them. The cache
@@ -111,7 +122,8 @@ cc $(pkg-config --cflags sdl2) tests/title-card.c build/glad.o \
 
 ## Controls
 
-`F` toggles fullscreen · `F9` writes the current state · `T` forces the next challenge · `ESC` quits.
+`F` toggles fullscreen · `F9` writes the current state · `T` forces a scrolling switch ·
+`Y` forces a hard-cut switch · `ESC` quits.
 
 If no audio device can be opened (headless hosts, `xvfb`), the port reports it and runs silent
 instead of refusing to start.

@@ -64,18 +64,57 @@ int main(void) {
         assert(memcmp(weights_before, g_dynw, sizeof g_dynw) == 0);
         int previews = count - 1;
         assert(roll_position(0, previews) == 0);
-        assert(roll_position(ROLL_MS / 2, previews) == previews * 0.75);
         assert(roll_position(ROLL_MS, previews) == previews);
         assert(roll_position(ROLL_MS + 100, previews) == previews);
         double previous_speed = previews;
         for (uint64_t t = 1; t <= ROLL_MS; t++) {
             double speed = roll_position(t, previews) - roll_position(t - 1, previews);
             assert(speed >= 0 && speed <= previous_speed + 1e-12);
-            if (previews) assert(speed > 0); /* No intermediate landings. */
+            if (roll_position(t, previews) < previews - 1)
+                assert(speed > 0); /* Never stop on an intermediate preview. */
             previous_speed = speed;
         }
     }
-    puts("Reel exclusions, recency isolation and continuous deceleration: PASS");
+    /* Every 100 ms interval is slower than the previous one: no slow cruise,
+     * no knee where braking suddenly finishes or starts again. */
+    double last_distance = ROLL_PREVIEWS;
+    for (uint64_t t = 100; t <= ROLL_MS; t += 100) {
+        double distance = roll_position(t, ROLL_PREVIEWS) -
+                          roll_position(t - 100, ROLL_PREVIEWS);
+        assert(distance > 0 && distance < last_distance - 1e-6);
+        last_distance = distance;
+    }
+    /* Several late candidates get meaningful time, not just the winner. */
+    uint64_t crossed_at = 0, last_dwell = 0;
+    int crossed = 0;
+    for (uint64_t t = 1; t <= ROLL_MS; t++) {
+        if (roll_position(t, ROLL_PREVIEWS) < crossed + 1) continue;
+        uint64_t dwell = t - crossed_at;
+        assert(dwell >= last_dwell && dwell >= 16);
+        if (crossed >= ROLL_PREVIEWS - 4) assert(dwell >= 200 && dwell <= 700);
+        crossed_at = t;
+        last_dwell = dwell;
+        crossed++;
+    }
+    assert(crossed == ROLL_PREVIEWS);
+    puts("Reel exclusions, recency isolation and uninterrupted slowdown: PASS");
+    assert(roll_slot_position(1000, 0) == 0);
+    for (int previews = 1; previews <= ROLL_PREVIEWS; previews++) {
+        assert(roll_slot_position(0, previews) == 0);
+        assert(roll_slot_position(ROLL_MS, previews) == previews);
+        assert(roll_slot_position(ROLL_MS + ROLL_PAUSE_MS, previews) == previews);
+        assert(roll_slot_position(ROLL_MS + ROLL_PAUSE_MS / 6, previews) > previews);
+        assert(roll_slot_position(ROLL_MS + ROLL_PAUSE_MS / 2, previews) < previews);
+        double previous = 0;
+        for (uint64_t t = 0; t <= ROLL_MS + ROLL_PAUSE_MS; t++) {
+            double p = roll_slot_position(t, previews);
+            assert(isfinite(p) && p >= 0 && p <= previews + 0.08);
+            if (t < ROLL_MS) assert(p >= previous - 1e-12 && p < previews);
+            assert((int)p <= previews); /* Safe even during the overshoot. */
+            previous = p;
+        }
+    }
+    puts("Slot detents, overshoot, rebound, settled endpoint and index bounds: PASS");
     for (int i = 0; i < N_CHALLENGES; i++) {
         char bmp[4096], info[4096];
         preview_paths(i, bmp, info);
